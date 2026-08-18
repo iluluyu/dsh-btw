@@ -1,0 +1,51 @@
+{
+  "name": "dsh-btw",
+  "version": "0.0.1",
+  "description": "Placeholder for the upcoming /btw side questions + temporary chat plugin for DeepSeek Harness (dsh). This release is a safe no-op; watch for 0.1.0.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "prepublishOnly": "node --check lib/index.js && node --check lib/client.js",
+    "check": "node --check lib/index.js && node --check lib/client.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iluluyu/dsh-btw.git"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "cordis.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-layout"
+      ],
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=1.0.0"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "deepseek",
+    "btw",
+    "side-question",
+    "temporary-chat"
+  ],
+  "license": "MIT",
+  "author": "iluluyu"
+}
