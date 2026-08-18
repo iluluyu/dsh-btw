@@ -1,7 +1,7 @@
 {
   "name": "dsh-btw",
-  "version": "0.0.1",
-  "description": "Placeholder for the upcoming /btw side questions + temporary chat plugin for DeepSeek Harness (dsh). This release is a safe no-op; watch for 0.1.0.",
+  "version": "0.0.2",
+  "description": "Side questions (/btw) and ephemeral temporary chat for DeepSeek Harness (dsh) web — ask without interrupting the main agent, dispose without traces",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

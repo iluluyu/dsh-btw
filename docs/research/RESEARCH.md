@@ -18,7 +18,7 @@
 | AHGGG/dsh-side-chat | 12 | ✅ npm `@ahggg/dsh-side-chat` | 选中文本追问（共享选中内容非全上下文）。锁 rc.6 |
 | 其余 | 0-4 | 仅 github | loster12520 / left0ver / cololi（三个同名 dsh-btw）、wensincai/btw4DeepseekHarness、ExElectron/btw-sidekick-plugin、boyun-zhang/better-session-management（会话分叉+btw 只读问答） |
 
-**占坑事实**：≥5 个仓库 package.json 都叫 `dsh-btw` 但均未发布 → 我们 2026-08-18 已发 `dsh-btw@0.0.1` 占位。
+**名字事实**：≥5 个社区仓库的 package.json 都叫 `dsh-btw` 但均未发布；本项目于 2026-08-18 注册并首发 `dsh-btw@0.0.1`（现为 0.0.2）。
 
 ## 二、临时聊天类（ChatGPT 式）
 
@@ -76,5 +76,5 @@
 
 - `dsh-plugin-outline` → `dsh-ui-outline@0.2.2`（deprecate 指向新名）
 - `dsh-plugin-deepdiving` → `dsh-ui-deepdiving@0.3.2`（同上）
-- `dsh-btw@0.0.1` 占位发布（README + cordis.yml + 空 client，安装零影响）
+- `dsh-btw@0.0.1` 首发注册（初始骨架，无行为变更；0.0.2 更新项目描述）
 - GitHub：iluluyu/dsh-ui-outline、iluluyu/dsh-ui-deepdiving（gh repo rename，旧 URL 自动重定向）、iluluyu/dsh-btw 新建
