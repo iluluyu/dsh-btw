@@ -28,7 +28,7 @@ A top-right entry opens an ephemeral conversation: no parent context, not persis
 
 ## Status
 
-Both halves implemented (unreleased, accumulating for the next patch):
+0.0.3 — both halves shipped:
 
 - **`/btw` 侧问** — 在主输入框输入 `/btw …`，或点击发送按钮旁的 `btw` 小胶囊；答案流式显示在输入框上方的临时面板，Esc 关闭。上下文取当前会话最近轮次的纯文本投影，host 端一次性 LLM 调用，不写任何会话存储。
 - **临时聊天** — 会话头部右上角「临时聊天」入口；host 端派一个用完即焚的子 agent（cwd = 当前项目根，只读倾向工具集），关闭即焚毁（含崩溃残留的 pid 标记回收）。

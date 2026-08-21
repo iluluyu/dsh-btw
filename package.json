@@ -1,6 +1,6 @@
 {
   "name": "dsh-btw",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Side questions (/btw) and ephemeral temporary chat for DeepSeek Harness (dsh) web — ask without interrupting the main agent, dispose without traces",
   "type": "module",
   "main": "lib/index.js",
