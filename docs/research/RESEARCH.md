@@ -78,3 +78,10 @@
 - `dsh-plugin-deepdiving` → `dsh-ui-deepdiving@0.3.2`（同上）
 - `dsh-btw@0.0.1` 首发注册（初始骨架，无行为变更；0.0.2 更新项目描述）
 - GitHub：iluluyu/dsh-ui-outline、iluluyu/dsh-ui-deepdiving（gh repo rename，旧 URL 自动重定向）、iluluyu/dsh-btw 新建
+
+## 附：0.1.1-rc.1 实测补充（2026-08-21，实现期踩坑）
+
+1. **自定义 RPC 错误码必须用官方词表**。`serverResponseSchema`（dsh-host-apiproxy）在浏览器端校验响应：`ok:false` 的 `error.code` 必须来自 `RpcErrorCode` 闭合词表（bad-request/internal/… 各带固定 `details` 形状），自定义 code 会让整个响应 parse 失败、真错误信息被 zod 转储掩盖。`ok:true` 的 value 不校验。→ dsh-btw 所有错误统一 `code:"internal"` + `details:{}`，细节放 message。
+2. **preset 服务与 scope 标签的模块分裂（dsh 安装结构 bug）**。全局装 dsh 时若把 dsh-base 装成独立顶层包（如为绕缺失依赖而手动钉版本），会得到两棵完整 node_modules 树（launcher 树 + dsh-base 嵌套树）；`dsh-scope`/`dsh-tools` 等用模块私有 `Symbol()` 做跨包协议键，两副本符号不同 → `agentPresets.mount` 报 "unscoped context"、工具调度报 `undefined (reading 'prepare')`。规避：保持单树（dsh-base 及其独占依赖都应在 launcher 的 node_modules 里）；插件侧可完全绕开 preset——在 `agents.create` 的 setup 里按行 import 插件包（经 `DSH_HOME/profiles/node_modules` resolve）+ `childCtx.plugin(mod, config)` 直接组合。上游发布完整（workflow-worker-thread 缺版补上）后应恢复"一条 npm i -g 全家桶"的单树安装。
+3. **`agent.whenIdle()` 在轮次开始前调用会立即 resolve**（followup 是同步 splice+wake，理论安全；实测仍需以 poll 增量为准兜底，send 的最终输出只在非空时覆盖轮询流）。
+4. client 模块更新后浏览器可能仍用旧 bundle：`location.reload()` 不一定够，需确认 dev server/roster 重新哈希（本地 link 开发时改 client.js 后重启 host + 硬刷）。

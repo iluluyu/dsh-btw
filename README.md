@@ -22,13 +22,18 @@ Ask one question against the current session context while the main agent keeps 
 
 ### Temporary chat — 临时聊天
 
-A top-right entry opens an ephemeral conversation: no parent context, not persisted, gone on close. Its working directory is the current project, so it doubles as the fastest way to learn what a repo is about. Reference UI: [docs/reference](docs/reference/chatgpt-temporary-chat.png).
+A top-right entry opens an ephemeral conversation: no parent context, not persisted, gone on close (Esc or the close button burns it, crash leftovers are swept on the next host start). Its working directory is the current project root, so it doubles as the fastest way to learn what a repo is about. Reference UI: [docs/reference](docs/reference/chatgpt-temporary-chat.png).
 
-右上角入口开启一段阅后即焚的对话：不继承父上下文、不落盘、关闭即消失；工作目录指向当前项目，天然适合"快速了解这个项目是干什么的"。
+右上角入口开启一段阅后即焚的对话：不继承父上下文、不落盘、关闭即消失（崩溃残留由 host 启动时回收）；工作目录指向当前项目，天然适合“快速了解这个项目是干什么的”。
 
 ## Status
 
-`0.1.x` side questions in development. Design notes and ecosystem research: [docs/research/RESEARCH.md](docs/research/RESEARCH.md).
+Both halves implemented (unreleased, accumulating for the next patch):
+
+- **`/btw` 侧问** — 在主输入框输入 `/btw …`，或点击发送按钮旁的 `btw` 小胶囊；答案流式显示在输入框上方的临时面板，Esc 关闭。上下文取当前会话最近轮次的纯文本投影，host 端一次性 LLM 调用，不写任何会话存储。
+- **临时聊天** — 会话头部右上角「临时聊天」入口；host 端派一个用完即焚的子 agent（cwd = 当前项目根，只读倾向工具集），关闭即焚毁（含崩溃残留的 pid 标记回收）。
+
+Design notes and ecosystem research: [docs/research/RESEARCH.md](docs/research/RESEARCH.md).
 
 ## Install
 
