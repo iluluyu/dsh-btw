@@ -1,48 +1,20 @@
+<p align="right"><a href="README.md">简体中文</a> · <a href="README.en.md">English</a></p>
+
 # dsh-btw
 
-Side questions and temporary chat for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) web.
+为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）提供旁路提问和临时聊天。两者都不写入主会话历史。
 
-为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）web 端提供的旁路问答与临时聊天插件。
+- **`/btw`**：主任务继续跑的时候提一个问题。答案出现在输入框上方的临时面板，Esc 关闭。也可以点发送按钮旁的 `btw` 胶囊。
+- **临时聊天**：会话右上角入口。不继承当前上下文，工作目录是当前项目，关闭即焚。
 
----
-
-## Why
-
-When the main agent is deep in a long task, you often want to ask one quick thing — *which config file did we settle on?* — without derailing it; and sometimes you want a short, throwaway conversation to get familiar with the project at hand. Both should leave the main session untouched: no interruption, no history pollution.
-
-主任务运行途中随手插一句旁路问题，或开一段用完即焚的对话快速摸清当前项目——两者都不打断主 Agent，也不写入主会话历史。
-
-## Features
-
-### `/btw <question>` — side question
-
-Ask one question against the current session context while the main agent keeps working. The answer renders in a transient panel above the composer; nothing enters session history.
-
-在主任务继续运行的同时，基于当前会话上下文提一个问题；答案显示在输入框上方的临时面板，不进入会话历史。
-
-### Temporary chat — 临时聊天
-
-A top-right entry opens an ephemeral conversation: no parent context, not persisted, gone on close (Esc or the close button burns it, crash leftovers are swept on the next host start). Its working directory is the current project root, so it doubles as the fastest way to learn what a repo is about. Reference UI: [docs/reference](docs/reference/chatgpt-temporary-chat.png).
-
-右上角入口开启一段阅后即焚的对话：不继承父上下文、不落盘、关闭即消失（崩溃残留由 host 启动时回收）；工作目录指向当前项目，天然适合“快速了解这个项目是干什么的”。
-
-## Status
-
-0.0.3 — both halves shipped:
-
-- **`/btw` 侧问** — 在主输入框输入 `/btw …`，或点击发送按钮旁的 `btw` 小胶囊；答案流式显示在输入框上方的临时面板，Esc 关闭。上下文取当前会话最近轮次的纯文本投影，host 端一次性 LLM 调用，不写任何会话存储。
-- **临时聊天** — 会话头部右上角「临时聊天」入口；host 端派一个用完即焚的子 agent（cwd = 当前项目根，只读倾向工具集），关闭即焚毁（含崩溃残留的 pid 标记回收）。
-
-Design notes and ecosystem research: [docs/research/RESEARCH.md](docs/research/RESEARCH.md).
-
-## Install
+## 安装
 
 ```sh
 dsh plugin --profile web add dsh-btw
 ```
 
-Restart `dsh web` and reload.
+重启 `dsh web` 并刷新。
 
-## License
+## 许可
 
 MIT
