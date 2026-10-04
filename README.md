@@ -11,9 +11,12 @@
 
 ```sh
 dsh plugin --profile web add dsh-btw
+dsh plugin --profile web add github:iluluyu/dsh-btw
+dsh plugin --profile web add .   # 插件目录下执行（相对路径相对当前执行位置）
+dsh plugin --profile web add file:/absolute/path/to/plugin
 ```
 
-重启 `dsh web` 并刷新。
+重启 `dsh web` 并刷新。卸载：`dsh plugin --profile web remove dsh-btw`。
 
 ## 许可
 

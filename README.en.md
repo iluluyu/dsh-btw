@@ -11,9 +11,12 @@ Side questions and temporary chat for [DeepSeek Harness](https://github.com/deep
 
 ```sh
 dsh plugin --profile web add dsh-btw
+dsh plugin --profile web add github:iluluyu/dsh-btw
+dsh plugin --profile web add .   # run from the plugin directory; relative paths are anchored to the invoking directory
+dsh plugin --profile web add file:/absolute/path/to/plugin
 ```
 
-Restart `dsh web` and reload.
+Restart `dsh web` and reload. Uninstall: `dsh plugin --profile web remove dsh-btw`.
 
 ## License
 
