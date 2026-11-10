@@ -1,5 +1,9 @@
-# dsh-btw — one loader row over the shipped Web composition.
-# Loads both the host RPC channel and browser UI.
+# One Loader source: btw mounts its backend through the public child plugin API.
+# rc.1 patches replace whole config, with NO routes deep-merge. DO NOT overwrite
+# storage-domain.backend or unknown user routes. Explicit startup opt-in:
+# preserve the COMPLETE existing storage-domain config, add only
+# routes.session_projcache: btw-native-json, then restart. See lib/native-cache.js.
+# Without that route nativeOpen returns a clear error; legacy APIs still work.
 - insert:
     - id: btw
       name: 'dsh-btw'

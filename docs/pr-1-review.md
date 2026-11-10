@@ -81,7 +81,7 @@ PR 的“connection 不是服务，只是始终存在的属性”解释不符合
 - 宿主不再报告 btw 激活失败；前端按钮和侧问面板正常挂载。
 - `/btw 本地兼容性验证，不发送` 自动迁移到侧问输入框且主输入框清空。
 - 认证浏览器的 `/btw/open`、`poll`、`close` 均成功；轮询空会话返回 `{text:"",lastSeq:0}`。
-- 点击已有会话的临时聊天入口后，浮层进入 active 状态，输入框可用；marker 的 cwd 为当前项目 `/home/luyu/augur/dusk`，不再退回 home。
+- 点击已有会话的临时聊天入口后，浮层进入 active 状态，输入框可用；marker 的 cwd 为当前项目目录，不再退回 home。
 - 按 Esc 后浮层消失，marker 清空；先前确实存在的子会话目录已删除。
 - `/api/settings/describe` 返回成功；未认证请求访问 `/api` 和 `/btw` 均为 HTTP 401。
 - 先前失败版本的浏览器错误记录仍保留旧 origin 的堆栈，最终版本未新增同类异常；没有提交真实模型请求。

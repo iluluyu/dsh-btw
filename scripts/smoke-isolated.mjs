@@ -110,6 +110,33 @@ async function eventually(check, description, timeout = 5000) {
 	throw new Error(`timed out: ${description}`);
 }
 
+async function concurrentTemps(origin, cookie) {
+	const pending = new Set();
+	try {
+		for (const payload of [{ cwd: root }, {}]) {
+			const { sessionId } = await rpc(origin, 'btw', 'open', payload, cookie);
+			assert.match(sessionId, /^[0-9a-f-]{36}$/i);
+			assert.equal(pending.has(sessionId), false, 'temporary chats must have distinct IDs');
+			pending.add(sessionId);
+			assert.ok(await recordFor(sessionId), 'each temporary chat owns a recovery record');
+		}
+		const [first, second] = [...pending];
+		assert.equal((await rpc(origin, 'btw', 'close', { sessionId: first }, cookie)).burned, true);
+		pending.delete(first);
+		assert.equal(await recordFor(first), null);
+		assert.deepEqual((await sessionArtifacts(first)).matches, []);
+		assert.ok(await recordFor(second), 'closing one chat must preserve the other record');
+		assert.ok((await sessionArtifacts(second)).files > 0, 'closing one chat must preserve the other log');
+		assert.equal((await rpc(origin, 'btw', 'poll', { sessionId: second, fromSeq: 0 }, cookie)).lastSeq, 0);
+	} finally {
+		for (const id of pending) {
+			assert.equal((await rpc(origin, 'btw', 'close', { sessionId: id }, cookie)).burned, true);
+			assert.equal(await recordFor(id), null);
+			assert.deepEqual((await sessionArtifacts(id)).matches, []);
+		}
+	}
+}
+
 async function tempRoundTrip(origin, cookie, payload, noWorkspace) {
 	const opened = await rpc(origin, 'btw', 'open', payload, cookie);
 	// Do not interpolate an untrusted id into a path or accept an ambiguous match.
@@ -214,6 +241,8 @@ try {
 	console.log('ok: workspace temp open/poll/close and physical/recovery-record cleanup');
 	await tempRoundTrip(url.origin, cookie, {}, true);
 	console.log('ok: no-workspace temp open/poll/close and physical/recovery-record cleanup');
+	await concurrentTemps(url.origin, cookie);
+	console.log('ok: concurrent temporary chats own independent records and close independently');
 	assert.doesNotMatch(output, activationFailure, 'activation error in log');
 } catch (error) {
 	failed = true;

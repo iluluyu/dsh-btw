@@ -13,6 +13,23 @@ $DSH_HOME/.btw-temp-records/<uuid>.json
 
 临时会话有工作区时使用其明确路径；没有工作区时保持无 cwd，仅加载文本 persona，不加载 bash/fs 工具，不回退到用户 home。
 
+## 原生普通 Session（显式启用）
+
+无来源 btw 可选用 DSH 原生普通对话页：`/btw nativeOpen` 创建 btw 独占的普通 root Session，前端用公开 `uiWorkspace.openSession(id)` 打开完整原生 conversation（composer、`+`、权限/模型选择、思考与消息渲染均由宿主提供）。启用需在启动配置中保留用户完整 `storage-domain` 的 `backend` 与 `routes`，仅添加 `routes.session_projcache: btw-native-json` 后重启；bundle 只注册 backend，绝不覆盖用户配置。未绑定 gate 或路由被覆盖时 `nativeOpen` 明确报错拒绝创建，前端显示错误，不创建临时会话，旧 ask/open 协议保留可用。
+
+创建前必须先对本人 UUID 落持久拒写标记（pre-create tombstone，gate 对本人 UUID 的 `session_projcache` 写入拒写、其他 key 透传），再创建 Session，因此投影缓存从不落盘。优先使用当前 Session 所属工作区并仅挂接本人 Session；无工作区时 cwd 是独占空目录，并为该目录建立专属 WorkspaceRegistry 注册 + `attachSession`。不从 HOME 或启动 cwd 猜测工作区：
+
+```text
+$DSH_HOME/.btw-native-deny/<uuid>.json            # 永久拒写墓碑（按设计保留，不回收）
+$DSH_HOME/.btw-native-records/<uuid>.json         # 原生会话恢复记录
+$DSH_HOME/.btw-native-workspaces/_no-cwd/<uuid>/  # 独占空 workspace（原生 cwd）
+$DSH_HOME/.btw-native-workspace-records/          # workspace 注册/意图 sidecar
+```
+
+`nativeClose` 需要 `{sessionId}` 且必须返回 `burned: true`。关闭顺序：拒写标记 retain → `dispose` → `whenIdle` → 删本人 JSONL 与空目录 → 移除专属 workspace 注册（先注册后目录）→ 删恢复记录 → 只清理本人 archive/pin 条目。隔离浏览器实测：关闭后 session 目录、project 目录、workspace 目录、records 全无，workspace registry 回到空，只剩 `.btw-native-deny/<uuid>.json` 永久墓碑；临时 workspace 打开期间作为「btw」分组出现在宿主工作区列表，关闭即消失。算法与实证见 [原生清理算法](native-cleanup-algorithms.md)。
+
+不承诺：不是 OS 沙箱（普通 preset 权限策略仍适用）；共享附件 blob 不删；不做安全擦除；不保证绕过 gate 的写入；跨进程互斥/并发宿主/断电等场景未覆盖。验证：`npm run check`、`npm test`（198/198）、`git diff --check`、`scripts/native-cache-backend-probe.mjs`、`scripts/native-cache-cross-process-probe.mjs`、`scripts/smoke-isolated.mjs`、`npm pack --dry-run`（15 files）均通过；隔离 Web 宿主实测打开→原生发送→回答→结束→无残留。
+
 ## 创建与清理
 
 1. 校验默认后端、根目录、祖先及符号链接；用随机 UUID 独占创建叶目录。

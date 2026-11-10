@@ -80,6 +80,25 @@ test("refuses missing search, malformed tools and model failures", async () => {
 	await assert.rejects(run(mock([[]])), /missing finish/);
 });
 
+test("public terminal failure retains bounded code/message, never partial text or opaque metadata", async () => {
+	const failure = { code: "UNSUPPORTED_TOOLS", message: "Synthetic model does not support tools", requestId: "opaque-request", cause: "private-cause" };
+	const requests = [], deltas = [];
+	await assert.rejects(run(mock([[
+		{ type: "text-delta", index: 0, text: "partial guess" },
+		{ type: "finish", reason: { kind: "error", failure } },
+	]], requests), { onDelta: text => deltas.push(text) }), error => {
+		assert.match(error.message, /error \(UNSUPPORTED_TOOLS\): Synthetic model does not support tools/);
+		assert.doesNotMatch(error.message, /opaque-request|private-cause|partial guess/);
+		return true;
+	});
+	assert.equal(requests.length, 1, "no fallback round after adapter failure");
+	assert.deepEqual(deltas, []);
+	await assert.rejects(run(mock([[{ type: "finish", reason: { kind: "error", failure: { code: "x".repeat(5000), message: "y".repeat(5000) } } }]])), error => {
+		assert.ok(error.message.length < 1200);
+		return true;
+	});
+});
+
 test("block-end wire, search round cap and duplicate IDs", async () => {
 	const block = { type: "tool-call", id: "x", name: "search_snapshot", arguments: '{"query":"apple"}' };
 	const end = [{ type: "block-start", index: 0, blockType: "tool-call" }, { type: "block-end", index: 0, block }, { type: "finish", reason: { kind: "tool-calls" } }];

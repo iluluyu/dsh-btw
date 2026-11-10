@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import vm from "node:vm";
+import { clientLoader } from "./client-loader.js";
 
 // Never inspect or burn the developer's real temporary-session marker.
 const home = mkdtempSync(join(tmpdir(), "dsh-btw-test-"));
@@ -65,7 +65,9 @@ function assertError(result, message) {
 }
 
 test("host owns only /btw, validates methods and disposes the channel", async (t) => {
-	assert.ok(inject.includes("webServer"), "rpc.handle needs webServer in the caller context");
+	assert.ok(inject.includes("profileContext"), "bootstrap requires profileContext");
+	const scopes = []; apply({ plugin() {}, inject(names) { scopes.push(names); } });
+	assert.ok(scopes.some(names => names.includes("webServer") && names.includes("connection")), "RPC child scope requires webServer and connection");
 	const fixture = host(t);
 	assertError(await fixture.call("settings/describe", {}), "unknown method: settings/describe");
 	assertError(await fixture.call("btw/ask", {}), "unknown method: btw/ask");
@@ -235,26 +237,28 @@ function client({ draft = "" } = {}) {
 		async mutate(operations) { for (const operation of operations) await this.set(operation.path[0], operation.value); },
 	};
 	const styles = [];
-	const intervals = new Map();
+	const intervals = new Map(), componentEffects = [];
 	const React = {
-		createElement: (type, props, ...children) => ({ type, props, children }),
-		useEffect() {},
+		createElement: (type, props, ...children) => ["BtwTempView", "BtwDockView"].includes(type?.name) ? type(props) : ({ type, props, children }),
+		useEffect(fn) { componentEffects.push(fn); },
 		useLayoutEffect() {},
 		useRef: (current) => ({ current }),
 		useState: (value) => [value === "" ? draft : value, () => {}],
 		useReducer: () => [0, () => {}],
 	};
-	vm.runInNewContext(readFileSync(new URL("../lib/client.js", import.meta.url), "utf8"), {
-		window: { __ModuleLoader__: { load: (module) => { entry = module.factory(() => React); } } },
+	const sandbox = {
+		window: {},
 		document: {
-			querySelector: () => styles[0] ?? null,
+			querySelector: (selector) => styles.find(tag => selector.includes(JSON.stringify(tag.dataset.pluginCss))) ?? null,
 			createElement: () => ({ dataset: {} }),
 			head: { appendChild: (tag) => styles.push(tag) },
 		},
 		setTimeout, clearTimeout,
 		setInterval: (callback) => { intervals.set(callback, callback); return callback; },
 		clearInterval: (id) => intervals.delete(id),
-	});
+	};
+	const loader = clientLoader(sandbox, (id) => { if (id === "react") return React; throw new Error("optional module unavailable"); });
+	entry = loader.entry;
 	const ctx = {
 		layout: { selectPanel: (key) => selectedPanels.push(key) },
 		inject(names, callback) {
@@ -301,6 +305,8 @@ function client({ draft = "" } = {}) {
 	return {
 		entry, ctx, pending, components, registrations, calls, modelCalls, selectedPanels, disposed, styles, intervals, scope, settingsListeners,
 		get unsubscribed() { return unsubscribed; },
+		commitEffects() { for (const fn of componentEffects.splice(0)) fn(); },
+		async warm() { const gate = components.get("plugins.bundle.config")({}); gate.type(gate.props); await flush(); },
 		mount() { for (const [name, callback] of pending) { registered.add(name); slotCleanups.set(name, callback()); } },
 		dispose() { for (const cleanup of cleanups.splice(0)) cleanup(); },
 	};
@@ -315,10 +321,9 @@ test("client defers required capabilities including overlay and global entry, an
 	for (const name of ["plugins.bundle.config", "plugins.row.config", "conversation.input.dock", "conversation.input.right", "shell.overlay"]) {
 		assert.ok(fixture.pending.has(name), `missing required capability: ${name}`);
 	}
-	assert.equal(fixture.modelCalls.length, 1);
-	assert.equal(fixture.modelCalls[0].channel, "/btw");
+	assert.equal(fixture.modelCalls.length, 0, "catalog is first-use work");
 	assert.equal(fixture.settingsListeners.size, 1);
-	fixture.mount();
+	fixture.mount(); await fixture.warm();
 	assert.deepEqual([...fixture.components.keys()], names);
 	assert.equal(fixture.components.get("shell.overlay")(), null);
 	assert.equal(tempEntry(fixture)({}).props["aria-label"], "临时聊天");
@@ -331,13 +336,14 @@ test("client defers required capabilities including overlay and global entry, an
 	const globalButton = globalEntry({});
 	assert.equal(globalButton.props["aria-label"], "开启全局临时聊天");
 	globalButton.props.onClick();
-	assert.deepEqual(fixture.selectedPanels, [globalPanel.key], "global navigation targets the registered panel");
-	assert.equal(fixture.calls.length, 0, "global navigation does not create a child before first send");
+	assert.deepEqual(fixture.selectedPanels, [], "missing public navigation never opens a fake page");
+	assert.match(JSON.stringify(fixture.components.get("shell.overlay")()), /宿主缺少安全的临时会话导航能力/);
+	assert.equal(fixture.calls.length, 0, "unavailable safety capability does not create a session");
 	assert.equal(fixture.components.get("plugins.row.config")({ view: "summary" }), "侧问与临时聊天设置");
 	await fixture.scope.set("showTempEntry", false);
 	assert.equal(tempEntry(fixture)({}), null);
 	assert.equal(globalEntry({}), null);
-	assert.equal(fixture.styles.length, 1);
+	assert.equal(fixture.styles.length, 2);
 	fixture.dispose();
 	assert.deepEqual(fixture.disposed, names);
 	assert.equal(fixture.components.size, 0, "disposing seats unregisters their renderers");
@@ -360,7 +366,7 @@ function findElement(element, predicate) {
 test("client temporary-chat first send opens /btw, streams and closes on unload", async () => {
 	const fixture = client();
 	fixture.entry.apply(fixture.ctx);
-	fixture.mount();
+	fixture.mount(); await fixture.warm();
 	const component = tempEntry(fixture);
 	const button = component({
 		sessionId: "main",
@@ -383,7 +389,7 @@ test("client temporary-chat first send opens /btw, streams and closes on unload"
 	assert.equal(fixture.calls[0].method, "open");
 	assert.equal(fixture.calls[0].payload.cwd, home);
 	assert.equal(fixture.calls[0].payload.parentSessionId, "main");
-	assert.equal(fixture.calls[0].payload.modelMode, "host");
+	assert.equal(fixture.calls[0].payload.modelMode, "current", "default follows the source model without changing it");
 	assert.equal(fixture.calls[1].method, "send");
 	assert.equal(fixture.calls[1].payload.sessionId, "temp");
 	assert.equal(fixture.calls[1].payload.text, "temporary question");
@@ -398,34 +404,25 @@ test("client temporary-chat first send opens /btw, streams and closes on unload"
 	assert.equal(overlay(), null);
 });
 
-test("client side-question submission and polling use /btw with context", async () => {
-	const fixture = client({ draft: "side question" });
-	fixture.entry.apply(fixture.ctx);
-	fixture.mount();
+test("fixed client submission uses the same native child transport with context and closes it on unload", async () => {
+	const fixture = client();
+	fixture.entry.apply(fixture.ctx); fixture.mount(); await fixture.warm();
 	fixture.components.get("conversation.input.right")().props.onClick();
-	const panel = fixture.components.get("conversation.input.dock")({
-		useSession: (select) => select({ status: "ready" }),
-		useChat: (select) => select({ legacy: { nodes: [{ kind: "user", content: [{ type: "text", text: "context" }] }] } }),
-	});
-	const findButton = (element) => {
-		if (!element || typeof element !== "object") return undefined;
-		if (element.props?.["aria-label"] === "提问") return element;
-		return element.children?.map(findButton).find(Boolean);
+	const dock = fixture.components.get("conversation.input.dock"), props = { sessionId: "main",
+		useSession: select => select({ sessionId: "main", removed: false }),
+		useChat: select => select({ legacy: { nodes: [{ kind: "user", content: [{ type: "text", text: "context" }] }] } }),
 	};
-	findButton(panel).props.onClick();
-	await flush();
-	assert.equal(fixture.calls[0].channel, "/btw");
-	assert.equal(fixture.calls[0].method, "ask");
-	assert.equal(fixture.calls[0].payload.question, "side question");
-	assert.equal(fixture.calls[0].payload.transcript, "User: context");
-	assert.equal(fixture.intervals.size, 1);
-	for (const callback of fixture.intervals.values()) callback();
-	await flush();
-	assert.equal(fixture.calls[1].channel, "/btw");
-	assert.equal(fixture.calls[1].method, "askPoll");
-	assert.equal(fixture.calls[1].payload.jobId, "ask-job");
+	dock(props); fixture.commitEffects();
+	let panel = dock(props);
+	findElement(panel, el => el.type === "textarea").props.onChange({ target: { value: "side question" } });
+	panel = dock(props); findElement(panel, el => el.props?.["aria-label"] === "提问").props.onClick();
+	await flush(); await flush();
+	assert.deepEqual(fixture.calls.map(call => call.method), ["open", "send", "poll"]);
+	assert.equal(fixture.calls[0].channel, "/btw"); assert.equal(fixture.calls[0].payload.transcript, "User: context");
+	assert.equal(fixture.calls[1].payload.sessionId, "temp"); assert.equal(fixture.calls[1].payload.text, "side question");
 	assert.equal(fixture.intervals.size, 0);
-	fixture.dispose();
+	assert.ok(findElement(dock(props), el => el.children?.includes("reply")));
+	fixture.dispose(); assert.equal(fixture.calls.at(-1).method, "close"); assert.equal(fixture.calls.at(-1).payload.sessionId, "temp");
 });
 
 test("client can activate before connection is available", async () => {
@@ -433,7 +430,7 @@ test("client can activate before connection is available", async () => {
 	delete fixture.ctx._connection;
 	delete fixture.ctx.configForms;
 	fixture.entry.apply(fixture.ctx);
-	fixture.mount();
+	fixture.mount(); await fixture.warm();
 	tempEntry(fixture)({}).props.onClick();
 	await flush();
 	assert.equal(fixture.calls.length, 0);
