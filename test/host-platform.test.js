@@ -3,7 +3,7 @@
  * on this development host — they do NOT claim a real Windows run. */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { hostEnvironment, ownerDead, processIdentity, syncDirectory, validOwner } from "../lib/host-platform.js";
+import { hostEnvironment, ownerDead, processIdentity, retryWindowsBusy, syncDirectory, validOwner } from "../lib/host-platform.js";
 
 const code = c => Object.assign(new Error(c), { code: c });
 const BOOT = "11111111-2222-3333-4444-555555555555";
@@ -150,4 +150,28 @@ test("hostEnvironment defaults bind the real host lazily", () => {
 	assert.equal(typeof e.openFile, "function");
 	// explicit overrides always win
 	assert.equal(hostEnvironment({ platform: "win32" }).platform, "win32");
+});
+
+test("retryWindowsBusy retries only Windows busy codes and never masks others", async () => {
+	const win = { platform: "win32" };
+	let calls = 0;
+	const value = await retryWindowsBusy(async () => {
+		calls += 1;
+		if (calls < 3) throw Object.assign(new Error("busy"), { code: calls === 1 ? "EBUSY" : "EPERM" });
+		return "done";
+	}, win, 5);
+	assert.equal(value, "done");
+	assert.equal(calls, 3);
+
+	calls = 0;
+	await assert.rejects(retryWindowsBusy(async () => { calls += 1; throw Object.assign(new Error("missing"), { code: "ENOENT" }); }, win, 5), /missing/);
+	assert.equal(calls, 1, "a non-busy code fails immediately on Windows");
+
+	calls = 0;
+	await assert.rejects(retryWindowsBusy(async () => { calls += 1; throw Object.assign(new Error("busy"), { code: "EBUSY" }); }, { platform: "linux" }, 5), /busy/);
+	assert.equal(calls, 1, "POSIX never retries");
+
+	calls = 0;
+	await assert.rejects(retryWindowsBusy(async () => { calls += 1; throw Object.assign(new Error("busy"), { code: "EBUSY" }); }, win, 3), /busy/);
+	assert.equal(calls, 3, "the attempt cap is honored");
 });

@@ -1515,7 +1515,7 @@ test("default presentation settings use exactly three modes and project sidebar 
 	assert.deepEqual(env.writes, [["tempPresentation", "sidebar"], ["tempWindowPinned", false], ["tempRememberPosition", false]]); env.cleanup();
 });
 
-test("native sidebar close targets the current child, not another chat", async () => {
+test("native sidebar close ignores foreign tabs and closes only the current child", async () => {
 	let nativeClose, unregistered = 0, next = 0;
 	const env = await setup({ tempPresentation: "sidebar" }, {
 		sidebar: { mounted: { getSnapshot: () => "origin" }, openTab() {}, isExpanded: () => false,
@@ -1527,15 +1527,13 @@ test("native sidebar close targets the current child, not another chat", async (
 	button(typeTemp(env, overlay, "first", inline), "发送").props.onClick(); await tick(); await tick();
 	const first = env.viewControllers.get(all(env.render(overlay, inline), n => n.props["data-chat-id"])[0].props["data-chat-id"]);
 	nativeClose("another-source"); assert.equal(env.calls.some(c => c[1] === "close"), false);
-	button(env.render(overlay, inline), "新建临时聊天").props.onClick();
-	assert.equal(env.render(overlay), null, "new sidebar chat must not create a floating window");
-	button(typeTemp(env, overlay, "second", inline), "发送").props.onClick(); await tick(); await tick();
-	nativeClose("origin"); await tick();
-	assert.deepEqual(env.calls.filter(c => c[1] === "close").map(c => c[2].sessionId), ["child-2"]);
-	assert.equal(first.store.state.sessionId, "child-1");
+	// The sidebar exposes no 新建 control any more, so it holds exactly one chat.
+	assert.equal(all(env.render(overlay, inline), n => n.props["aria-label"] === "新建临时聊天").length, 0);
+	assert.equal(env.render(overlay), null, "the sidebar chat never leaks into a floating window");
 	assert.deepEqual(Array.from(first.store.state.messages, m => m.text), ["first", "ok"]);
+	nativeClose("origin"); await tick();
+	assert.deepEqual(env.calls.filter(c => c[1] === "close").map(c => c[2].sessionId), ["child-1"]);
 	env.cleanup(); await tick(); assert.equal(unregistered, 1);
-	assert.deepEqual(env.calls.filter(c => c[1] === "close").map(c => c[2].sessionId), ["child-2", "child-1"]);
 });
 
 const geometry = (tree) => {
@@ -2591,7 +2589,7 @@ test("fixed editor expansion belongs to each chat, not another source", async ()
 });
 
 
-test("sidebar new keeps the native seat and preserves the previous draft with or without messages", async () => {
+test("sidebar hides the retired 新建 and 最小化 controls and keeps the chat intact", async () => {
 	for (const withMessages of [false, true]) {
 		const surface = publicSidebar(); let children = 0;
 		const env = await setup({}, { sidebar: surface.right, layout: { selectPanel() {} }, rpc: method => ({ ok: true, value: method === "models" ? { providers: [] } : method === "open" ? { sessionId: "sidebar-child-" + ++children } : method === "send" ? { output: "reply" } : { text: "", lastSeq: 0 } }) });
@@ -2599,24 +2597,18 @@ test("sidebar new keeps the native seat and preserves the previous draft with or
 		env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
 		if (withMessages) { button(typeTemp(env, overlay, "old question", inline), "发送").props.onClick(); await tick(); await tick(); }
 		let tree = typeTemp(env, overlay, "old private draft", inline);
-		const oldId = all(tree, n => n.props["data-chat-id"])[0].props["data-chat-id"], old = env.viewControllers.get(oldId);
-		assert.equal(all(tree, n => n.props["data-btw-mode"]).length, 0);
-		assert.equal(all(tree, n => n.props["aria-label"] === "窗口显示模式").length, 0);
-		button(tree, "新建临时聊天").props.onClick(); tree = env.render(overlay, inline);
-		assert.ok(tree, "new chat remains in sidebar");
-		assert.notEqual(all(tree, n => n.props["data-chat-id"])[0].props["data-chat-id"], oldId);
-		assert.equal(all(tree, n => n.type === "textarea")[0].props.value, "");
-		assert.equal(old.store.state.draft, "old private draft");
-		if (withMessages) assert.deepEqual(Array.from(old.store.state.messages, m => m.text), ["old question", "reply"]);
+		const id = all(tree, n => n.props["data-chat-id"])[0].props["data-chat-id"], controller = env.viewControllers.get(id);
+		assert.equal(all(tree, n => n.props["aria-label"] === "新建临时聊天").length, 0, "sidebar must not offer 新建");
+		assert.equal(all(tree, n => n.props["aria-label"] === "最小化 btw").length, 0, "sidebar must not offer 最小化");
+		tree = env.render(overlay, inline);
+		assert.equal(all(tree, n => n.props["data-chat-id"])[0].props["data-chat-id"], id, "the same chat stays in the sidebar");
+		assert.ok(controller, "the chat controller is untouched by the missing controls");
 		assert.equal(env.render(overlay), null, "no unwanted floating window");
 		assert.equal(surface.rows().length, 1, "exactly one native sidebar tab remains");
 		assert.equal(surface.rows()[0].sessionId, "origin");
-		assert.equal(surface.right.active().id, surface.rows()[0].tabId);
 		assert.equal(surface.right.active().kind, "btw-temp");
-		assert.equal(env.calls.some(c => c[1] === "close"), false);
 		button(tree, "结束临时聊天").props.onClick(); await tick();
-		assert.equal(old.store.state.draft, "old private draft");
-		assert.equal(env.calls.some(c => c[1] === "close" && c[2].sessionId === "sidebar-child-1"), false);
+		if (withMessages) assert.ok(env.calls.some(c => c[1] === "close"), "ending the sidebar chat still closes its child");
 		env.cleanup();
 	}
 });
