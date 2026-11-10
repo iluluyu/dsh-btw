@@ -273,7 +273,7 @@ async function fixtureNative(options = {}) {
 
 test("nativeOpen requires explicit active route; unknown/foreign IDs are never false success", async () => {
 	const plain = host();
-	assert.match((await plain.call("nativeOpen", {})).error.message, /gate.*未配置/);
+	assert.match((await plain.call("nativeOpen", {})).error.message, /gate.*未绑定/);
 	assert.equal(plain.creations(), 0);
 	assert.equal((await plain.call("nativeClose", { sessionId: randomUUID() })).ok, false);
 	await plain.cleanup();
@@ -1576,4 +1576,59 @@ test("close fences pending and late reasoning before disposal, including a faile
 	assert.equal((await f.h.call("send", { sessionId: next, text: "new" })).ok, true);
 	assert.equal((await thinkingPoll(f, next)).value.reasoning, "new child reasoning");
 	await closed(f, next); await f.h.cleanup();
+});
+
+// ── platform-injection coverage for cross-platform temp sessions ──────────
+// These tests patch process.platform to exercise the win32/darwin BRANCHES of
+// lib/host-platform.js through the real index.js paths on this (Linux) box.
+// They do NOT claim a real Windows/macOS run: the filesystem and signal
+// semantics below are the host's, only the platform-conditional code paths vary.
+
+const withPlatform = (name, run) => {
+	const saved = Object.getOwnPropertyDescriptor(process, "platform");
+	Object.defineProperty(process, "platform", { value: name, configurable: true });
+	return Promise.resolve().then(run).finally(() => Object.defineProperty(process, "platform", saved));
+};
+
+test("win32/darwin-simulated hosts open and burn temporary sessions with portable signal0 owners", async () => {
+	for (const platform of ["win32", "darwin"]) {
+		await withPlatform(platform, async () => {
+			const f = fixtureTemp(), id = await opened(f);
+			const owner = readRecord(id).owner;
+			assert.deepEqual(owner, { pid: process.pid, kind: "signal0" }, `${platform} stores a portable owner`);
+			await closed(f, id); await f.h.cleanup();
+		});
+	}
+	// the same install keeps working after the platform is restored (legacy /proc owner on linux)
+	const f = fixtureTemp(), id = await opened(f);
+	const owner = readRecord(id).owner;
+	assert.equal(typeof owner.bootId, "string");
+	assert.equal(typeof owner.startTicks, "string");
+	await closed(f, id); await f.h.cleanup();
+});
+
+test("non-linux recovery: only ESRCH-proven portable owners are reclaimed; alive, PID-reuse, EPERM-ambiguous and legacy /proc owners stay", async () => {
+	const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+	try {
+		const live = await makeOrphan({ pid: child.pid, kind: "signal0" });
+		const legacy = await makeOrphan(ownerFor(process.pid));
+		const privileged = await makeOrphan({ pid: 1, kind: "signal0" }); // EPERM for non-root, alive for root: kept either way
+		await withPlatform("win32", triggerRecovery);
+		assert.equal(existsSync(live.dir), true, "live owner (incl. PID-reuse shape) is never swept");
+		assert.equal(existsSync(legacy.dir), true, "/proc owner is unverifiable off linux and stays");
+		assert.equal(existsSync(privileged.dir), true, "permission/alive ambiguity never deletes");
+		const exited = new Promise(resolve => child.once("exit", resolve)); child.kill("SIGKILL"); await exited;
+		await withPlatform("win32", triggerRecovery);
+		assert.equal(existsSync(live.dir), false, "ESRCH-proven portable owner is reclaimed");
+		assert.equal(existsSync(recordPath(live.id)), false);
+		assert.equal(existsSync(legacy.dir), true);
+		assert.equal(existsSync(privileged.dir), true);
+		rmSync(privileged.dir, { recursive: true, force: true });
+		rmSync(recordPath(privileged.id), { force: true });
+		// back on linux the same legacy record generation still validates and recovers
+		const priorBoot = await makeOrphan({ ...ownerFor(process.pid), bootId: "00000000-0000-0000-0000-000000000000" });
+		await triggerRecovery();
+		assert.equal(existsSync(priorBoot.dir), false, "legacy linux records keep their boot-id death proof");
+		assert.equal(existsSync(legacy.dir), true);
+	} finally { if (child.exitCode === null) child.kill("SIGKILL"); }
 });
