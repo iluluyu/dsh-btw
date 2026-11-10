@@ -1641,11 +1641,13 @@ test("focus only raises independent windows; Escape closes only the focused cont
 	for (const event of [{ defaultPrevented: true }, { isComposing: true }, { target: { closest: () => ({}) } }]) env.dispatch("keydown", { key: "Escape", target: inside, ...event });
 	assert.equal(env.calls.filter(c => c[1] === "close").length, 0);
 	env.dispatch("keydown", { key: "Escape", target: inside }); await tick();
-	assert.deepEqual(env.calls.filter(c => c[1] === "close").map(c => c[2].sessionId), ["one"]);
+	// Esc parks the focused window: the chat, its child and the draft survive.
+	assert.deepEqual(env.calls.filter(c => c[1] === "close"), []);
 	tree = env.render(overlay); assert.ok(chatWindow(tree, "btw-2")); assert.equal(chatWindow(tree, "btw-1"), undefined);
 	assert.equal(all(tree, n => n.type === "textarea")[0].props.value, "second draft");
 	env.render(entry, projectProps()).props.onClick(); tree = env.render(overlay);
-	assert.equal(all(tree, n => n.props["data-chat-id"]).length, 1, "source entry resumes the remaining controller automatically");
+	assert.equal(all(tree, n => n.props["data-chat-id"]).length, 2, "the parked chat resumes next to the visible one");
+	assert.equal(all(chatWindow(tree, "btw-2"), n => n.type === "textarea")[0].props.value, "second draft");
 	assert.equal(all(tree, n => n.props["aria-label"] === "切换临时聊天").length, 0);
 	const css = env.styles.join(""); assert.match(css, /\.dsh-btw-desktop\{[^}]*z-index:9000/); assert.match(css, /picker-menu\[data-menu-material\]\{z-index:9010/);
 	assert.equal(all(tree, n => n.props.className === "dsh-btw-desktop").length, 1); env.cleanup();
@@ -2622,5 +2624,72 @@ test("floating window retains all mode controls while sidebar has none", async (
 	env.render(env.registrations.get("btw-temp"), projectProps("/other", "other")).props.onClick();
 	const floating = env.render(overlay);
 	assert.deepEqual(all(floating, n => n.props["data-btw-mode"]).map(n => n.props["data-btw-mode"]), ["overlay", "sidebar", "global"]);
+	env.cleanup();
+});
+
+test("Esc parks the small window without ending the chat or losing the draft", async () => {
+	const env = await setup({}, { effects: true });
+	const overlay = env.registrations.get("btw");
+	env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
+	let tree = typeTemp(env, overlay, "esc keeps this draft");
+	const id = all(tree, n => n.props["data-chat-id"])[0].props["data-chat-id"];
+	env.dispatch("keydown", { key: "Escape", target: escapeTarget(tree, id) }); await tick();
+	assert.equal(env.render(overlay), null, "Esc hides the window");
+	assert.equal(env.calls.some(c => c[1] === "close"), false, "Esc must not end the btw");
+	env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
+	tree = env.render(overlay);
+	assert.equal(all(tree, n => n.props["data-chat-id"])[0].props["data-chat-id"], id, "the same chat comes back");
+	assert.equal(all(tree, n => n.type === "textarea")[0].props.value, "esc keeps this draft");
+	env.cleanup();
+});
+
+test("Esc in the fixed panel leaves the panel instead of ending the btw", async () => {
+	const env = await setup({}, { effects: false });
+	const ask = env.registrations.get("btw-ask"), props = chatProps("origin");
+	env.render(ask, props); // warm the panel like the dock test does
+	env.render(env.registrations.get("btw-trigger"), { sessionId: "origin" }).props.onClick();
+	let tree = env.render(ask, props);
+	if (!all(tree, n => n.type === "textarea").length) { all(tree, n => n.props["aria-label"] === "展开输入框")[0]?.props.onClick(); tree = env.render(ask, props); }
+	let textarea = all(tree, n => n.type === "textarea")[0];
+	assert.ok(textarea, "the fixed panel exposes its editor");
+	textarea.props.onChange({ target: { value: "dock esc draft" } });
+	tree = env.render(ask, props);
+	all(tree, n => n.type === "textarea")[0].props.onKeyDown({ key: "Escape", nativeEvent: {}, target: { closest: () => null }, preventDefault() {}, stopPropagation() {} });
+	tree = env.render(ask, props);
+	assert.equal(env.calls.some(c => c[1] === "close"), false, "Esc never ends the fixed-panel btw");
+	env.render(env.registrations.get("btw-trigger"), { sessionId: "origin" }).props.onClick();
+	tree = env.render(ask, props);
+	assert.ok(tree, "the panel is reachable again");
+	if (!all(tree, n => n.type === "textarea").length) { all(tree, n => n.props["aria-label"] === "展开输入框")[0]?.props.onClick(); tree = env.render(ask, props); }
+	textarea = all(tree, n => n.type === "textarea")[0];
+	assert.equal(textarea?.props.value ?? "", "dock esc draft", "the draft survives Esc");
+	env.cleanup();
+});
+
+test("Esc never closes the native temporary chat", async () => {
+	const selected = [], env = await setup({}, { effects: true, layout: { selectPanel: id => selected.push(id) } });
+	const overlay = env.registrations.get("btw");
+	env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
+	modeControl(typeTemp(env, overlay, "native surface draft"), "global").props.onClick();
+	const tree = env.render(overlay, { standalone: true });
+	assert.ok(tree, "the chat is presented fullscreen");
+	selected.length = 0;
+	env.dispatch("keydown", { key: "Escape", target: escapeTarget(tree, "btw-1") }); await tick();
+	assert.equal(env.calls.some(c => c[1] === "close"), false, "Esc cannot end a temporary chat");
+	assert.deepEqual(selected, [], "Esc cannot navigate away from the temporary chat");
+	assert.ok(env.render(overlay, { standalone: true }), "the temporary chat stays on screen");
+	env.cleanup();
+});
+
+test("closing the only fullscreen btw panel returns to the conversation", async () => {
+	const selected = [], env = await setup({}, { effects: true, layout: { selectPanel: id => selected.push(id) } });
+	const overlay = env.registrations.get("btw");
+	env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
+	modeControl(typeTemp(env, overlay, "sole panel draft"), "global").props.onClick();
+	const tree = env.render(overlay, { standalone: true });
+	assert.ok(tree, "sole btw panel is presented");
+	selected.length = 0;
+	button(tree, "结束临时聊天").props.onClick(); await tick();
+	assert.deepEqual(selected, [null], "the emptied panel closes instead of showing a blank shell");
 	env.cleanup();
 });
