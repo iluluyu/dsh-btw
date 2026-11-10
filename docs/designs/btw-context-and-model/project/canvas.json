@@ -1,0 +1,74 @@
+{
+  "v": 3,
+  "attachments": {},
+  "boards": {
+    "Main.dc.html": {
+      "expand": "fill",
+      "h": 940,
+      "title": "侧问 · 发送前选择",
+      "w": 1440,
+      "x": 0,
+      "y": 0
+    },
+    "Settings.dc.html": {
+      "expand": "fill",
+      "h": 1080,
+      "title": "插件设置 · 默认行为与显示",
+      "w": 1440,
+      "x": 4560,
+      "y": 0
+    },
+    "Sidebar.dc.html": {
+      "expand": "fill",
+      "h": 940,
+      "title": "侧边栏 · 多选送回",
+      "w": 1440,
+      "x": 3040,
+      "y": 0
+    },
+    "Standalone.dc.html": {
+      "expand": "fill",
+      "h": 940,
+      "title": "新建会话 · 临时聊天",
+      "w": 1440,
+      "x": 6080,
+      "y": 0
+    },
+    "TempChat.dc.html": {
+      "expand": "fill",
+      "h": 940,
+      "title": "临时聊天 · 直接聊天",
+      "w": 1440,
+      "x": 1520,
+      "y": 0
+    }
+  },
+  "createdOnFiles": {
+    "at": "2026-11-09T16:13:26Z",
+    "v": 1
+  },
+  "designSystems": [],
+  "launch": {
+    "view": "canvas"
+  },
+  "noteOrder": [
+    "note-c4jhzx"
+  ],
+  "notes": {
+    "note-c4jhzx": {
+      "text": "相关的G2 圆角和 DSH官方的保持一致",
+      "w": 240,
+      "x": 837,
+      "y": 600
+    }
+  },
+  "order": [
+    "Main.dc.html",
+    "TempChat.dc.html",
+    "Sidebar.dc.html",
+    "Settings.dc.html",
+    "Standalone.dc.html"
+  ],
+  "pages": [],
+  "title": "btw · 上下文与模型设计"
+}

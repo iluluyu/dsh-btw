@@ -1,7 +1,7 @@
 {
   "name": "dsh-btw",
   "version": "0.0.3",
-  "description": "Side questions (/btw) and ephemeral temporary chat for DeepSeek Harness (dsh) web — ask without interrupting the main agent, dispose without traces",
+  "description": "Side questions (/btw) and ephemeral temporary chat for DeepSeek Harness (dsh) web — ask without interrupting the main agent, clean up temporary session records",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -16,8 +16,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "prepublishOnly": "node --check lib/index.js && node --check lib/client.js",
-    "check": "node --check lib/index.js && node --check lib/client.js"
+    "prepublishOnly": "npm run check && npm test",
+    "check": "node --check lib/index.js && node --check lib/client.js && node --check lib/context-search.js",
+    "test": "node --test test/*.test.js"
   },
   "repository": {
     "type": "git",
@@ -37,6 +38,9 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=1.0.0"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4"
   },
   "keywords": [
     "dsh-plugin",
