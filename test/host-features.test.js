@@ -292,7 +292,7 @@ test("nativeOpen requires explicit active route; unknown/foreign IDs are never f
 
 test("native root uses ordinary default preset/model, rejects source payloads and retains permanent deny markers", async () => {
 	const f = await fixtureNative();
-	for (const payload of [{ parentSessionId: "parent" }, { transcript: "private" }, { cwd: root }, { modelMode: "current" }, null, []]) {
+	for (const payload of [{ parentSessionId: "parent" }, { transcript: "private" }, { cwd: "relative/dir" }, { cwd: 7 }, { cwd: `${root}/../escape` }, { modelMode: "current" }, null, []]) {
 		assert.equal((await f.h.call("nativeOpen", payload)).ok, false);
 	}
 	const response = await f.h.call("nativeOpen", {});
