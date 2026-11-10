@@ -1,6 +1,6 @@
 # DSH 输入框复用边界（rc.1）
 
-**现状：已接入原生页面。** 无来源 btw 经 `/btw nativeOpen` 创建 btw 独占的普通 root Session，前端用公开 `uiWorkspace.openSession(id)` 打开完整 DSH 原生 conversation；原生 composer、`+`、权限/模型选择、思考与消息渲染全部由宿主提供。btw 只额外做两件事：按 `[data-conversation-session="<owned id>"]` 作用域给 composer 卡与用户气泡加虚线描边；因原生 hero 页不渲染 header utilities，在右上角提供带对勾的「临时聊天」状态入口，点击结束。启用需显式 startup 路由（保留用户完整 `storage-domain` 配置，仅添加 `routes.session_projcache: btw-native-json` 后重启）；未绑定 gate 或路由被覆盖时 `nativeOpen` 明确报错拒绝创建，前端显示错误，不创建临时会话，旧 ask/open 协议保留可用。拒写门、workspace 注册与关闭顺序见 [清理算法](native-cleanup-algorithms.md)，本文件保留历史调研与其结论。
+**现状：已接入原生页面。** 无来源 btw 经 `/btw nativeOpen` 创建 btw 独占的普通 root Session，前端用公开 `uiWorkspace.openSession(id)` 打开完整 DSH 原生 conversation；原生 composer、`+`、权限/模型选择、思考与消息渲染全部由宿主提供。btw 只额外做两件事：按 `[data-conversation-session="<owned id>"]` 作用域给 composer 卡与用户气泡加虚线描边；因原生 hero 页不渲染 header utilities，在右上角提供带对勾的「临时聊天」状态入口，点击结束。启动时由插件自动绑定该路由（内存合并，不写用户配置）；无法安全合并或 gate 未绑定时 `nativeOpen` 明确报错拒绝创建，前端显示错误，不创建临时会话，旧 ask/open 协议保留可用。拒写门、workspace 注册与关闭顺序见 [清理算法](native-cleanup-algorithms.md)，本文件保留历史调研与其结论。
 
 用户希望 btw 使用 DSH 原生输入框、发送按钮、`+` 和权限管理。接入前的实现让无来源 btw 在主区域的独立页面打开，输入框与用户消息采用虚线，退出触发既有 child 清理；发送控件使用原生风格的圆形向上箭头，并复用已验证可用的公开 `Menu`、`Button`、`Tooltip` 和 Markdown。那曾是 btw 自己的视图，不是 DSH 原生 conversation factory，也没有冒充可用的附件或权限功能。
 

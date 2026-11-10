@@ -10,7 +10,7 @@
 
 ## 上轮：无来源 btw 接入 DSH 原生普通对话页
 
-- 无来源入口经 `/btw nativeOpen` 创建 btw 独占的普通 root Session，公开 `uiWorkspace.openSession(id)` 打开完整原生 conversation；composer、`+`、权限/模型选择、思考与消息渲染均由宿主提供，btw 只按 `[data-conversation-session="<owned id>"]` 作用域给 composer 卡与用户气泡加虚线描边，并在右上角提供带对勾的「临时聊天」状态入口，点击结束（原生 hero 页不渲染 header utilities）。启用需在启动配置中保留用户完整 `storage-domain` 的 `backend` 与 `routes`，仅添加 `routes.session_projcache: btw-native-json` 后重启（bundle 只注册 backend，不覆盖用户配置）；未绑定 gate 或路由被覆盖时 `nativeOpen` 明确报错拒绝创建，前端显示错误，不创建临时会话，旧 ask/open 协议保留可用。
+- 无来源入口经 `/btw nativeOpen` 创建 btw 独占的普通 root Session，公开 `uiWorkspace.openSession(id)` 打开完整原生 conversation；composer、`+`、权限/模型选择、思考与消息渲染均由宿主提供，btw 只按 `[data-conversation-session="<owned id>"]` 作用域给 composer 卡与用户气泡加虚线描边，并在右上角提供带对勾的「临时聊天」状态入口，点击结束（原生 hero 页不渲染 header utilities）。路由由插件启动时自动绑定（内存合并，绝不写用户配置）；用户显式路由到其他 backend 或 gate 未绑定时 `nativeOpen` 明确报错拒绝创建，前端显示错误，不创建临时会话，旧 ask/open 协议保留可用。
 - 创建前先落本人 UUID 的持久拒写标记（pre-create tombstone；gate 对本人 UUID 的 `session_projcache` 写入拒写，其他 key 透传），投影缓存从不落盘；默认继承当前 Session 所属的工作区；没有工作区时 cwd 为独占空目录 `$DSH_HOME/.btw-native-workspaces/_no-cwd/<UUID>` 并建立专属 WorkspaceRegistry 注册。两种方式都通过 `attachSession` 挂接本人 Session，否则原生 hero composer 会 inert。
 - `nativeClose` 需要 `{sessionId}` 且必须返回 `burned: true`（未确认视为失败）；关闭顺序：拒写标记 retain → dispose → whenIdle → 删本人 JSONL 与空目录 → 移除专属 workspace 注册（先注册后目录）→ 删恢复记录 → 只清理本人 archive/pin 条目。隔离浏览器实测：关闭后 session 目录、project 目录、workspace 目录、records 全无，workspace registry 回到空，只剩 `.btw-native-deny/<uuid>.json` 永久墓碑（按设计保留）；临时 workspace 打开期间作为「btw」分组出现在宿主工作区列表，关闭即消失。
 - 边界：不是 OS 沙箱（普通 preset 权限策略仍适用）；共享附件 blob 不删；不做安全擦除；不保证绕过 gate 的写入；跨进程互斥/并发宿主/断电等场景未覆盖。

@@ -298,7 +298,9 @@ test("native root uses ordinary default preset/model, rejects source payloads an
 	const response = await f.h.call("nativeOpen", {});
 	assert.equal(response.ok, true, JSON.stringify(response));
 	const id = response.value.sessionId;
-	assert.deepEqual(Object.keys(response.value), ["sessionId"]);
+	assert.deepEqual(Object.keys(response.value), ["sessionId", "workspaceId", "cwd"]);
+	assert.equal(response.value.cwd, nativeWorkspace(response.value.sessionId));
+	assert.equal(response.value.workspaceId, f.workspaceRegistry.list().find(w => w.path === response.value.cwd)?.id);
 	assert.deepEqual(f.createOptions[0].meta, { cwd: nativeWorkspace(id), agentPreset: "ordinary-default" });
 	assert.equal(f.createOptions[0].parentAgent, undefined);
 	const registered = f.workspaceRegistry.list().find(w => w.path === nativeWorkspace(id));
