@@ -29,6 +29,8 @@ The working tree targets dsh `0.2.2-rc.1`: a dedicated `/btw` RPC channel leaves
 
 The npm `0.0.3` release does not contain these unpublished fixes. Use a local-directory installation for development; the local version stays unchanged until a consolidated patch release.
 
+Local code updates also require restarting `dsh web`, not just refreshing the browser. `unknown method: models` means the running host does not provide the new method. Once active tasks finish, restart the host, refresh the page, and retry loading models.
+
 ```sh
 npm run check
 npm test

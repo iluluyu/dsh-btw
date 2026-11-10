@@ -18,7 +18,7 @@ git diff --check
 npm pack --dry-run --json
 ```
 
-- 交付前完整测试 **76 项通过，0 失败**；覆盖真实协议形状、来源和请求代次、乱序轮询、晚到 open、关闭重试、卸载、设置拒写、分页/缓存/取消与清理故障。
+- 交付前完整测试 **78 项通过，0 失败**；覆盖真实协议形状、来源和请求代次、乱序轮询、晚到 open、关闭重试、卸载、设置拒写、分页/缓存/取消与清理故障。
 - 离线 smoke 退出 0：真实宿主认证围栏、内置 `/api`、工作区及无工作区 open/poll/close、JSONL 文件和 version 2 恢复记录删除、普通会话哨兵保留、延迟复查不重建。
 - 真实模型 smoke 退出 0：none 固定回答、recent/on-demand marker、all 超过 48k 的历史开头 marker，以及 byte-identical 完整历史前缀的第二问；无工作区两轮 send/poll 正确回忆 marker，close 后目录和记录消失，所属进程与临时根目录已清理。
 - 主代理检查过 npm dry-run 的文件列表：8 个文件，压缩包约 36KiB；只包含运行时代码、manifest、许可与 README，设计、测试、脚本、CI 和截图不进入 npm 包。
@@ -59,6 +59,10 @@ Astra 单一负责架构收束，不重写已验证的宿主；职责、状态�
 - [窄屏深色弹窗](verification/screenshots/temp-narrow-dark.png)
 
 设计批注逐项对应见 [design-acceptance.md](design-acceptance.md)。原画布、批注保留，不替用户删除。
+
+## 旧进程兼容提示回归
+
+实际用户运行的 web 进程早于新版宿主代码启动；本地插件链接和磁盘上的 `models` 注册均正确。只刷新前端会产生 `unknown method: models`。未擅自中断用户进程；客户端现明确提示重启宿主并刷新，保留重试。新增回归覆盖旧宿主失败 → 更新后重试成功，并确保认证/网络错误不被误报为版本问题。check、78 项测试、diff 检查及隔离宿主 smoke 重新通过。
 
 ## 已知边界，不作超额承诺
 

@@ -93,6 +93,37 @@ test("settings writes toggle and selected model through form scope", async () =>
 	]);
 });
 
+test("old host catalog explains restart and retry loads the updated host", async () => {
+	let outdated = true;
+	const env = setup({}, { rpc: () => outdated
+		? { ok: false, error: { message: "unknown method: models" } }
+		: { ok: true, value: { providers: [{ id: "p", models: [{ id: "m", name: "Model" }] }] } } });
+	await tick();
+	const settings = env.render(env.registrations.get("dsh-btw#btw")({}).type);
+	const model = all(settings, (n) => typeof n.type === "function")[0];
+	const render = () => env.render(model.type, model.props);
+	let tree = render();
+	assert.match(JSON.stringify(tree), /宿主仍运行旧版 btw，请重启 dsh web 并刷新页面后重试/);
+	assert.doesNotMatch(JSON.stringify(tree), /unknown method/);
+	outdated = false;
+	all(tree, (n) => n.type === "button" && n.children.includes("重试"))[0].props.onClick();
+	await tick(); tree = render();
+	assert.equal(all(tree, (n) => n.props.className === "dsh-btw-err").length, 0);
+	assert.ok(all(tree, (n) => n.type === "option").some((n) => n.props.value === '["p","m"]'));
+	env.cleanup();
+});
+
+test("unrelated catalog failures are not misreported as an outdated host", async () => {
+	for (const message of ["authentication required", "network unavailable"]) {
+		const env = setup({}, { rpc: () => ({ ok: false, error: { message } }) }); await tick();
+		const settings = env.render(env.registrations.get("dsh-btw#btw")({}).type);
+		const model = all(settings, (n) => typeof n.type === "function")[0];
+		const tree = JSON.stringify(env.render(model.type, model.props));
+		assert.ok(tree.includes(message)); assert.doesNotMatch(tree, /宿主仍运行旧版/);
+		env.cleanup();
+	}
+});
+
 test("settings reports false set/mutate receipts and clears the error after a real save", async () => {
 	const options = { settingResult: false }, env = setup({}, options); await tick();
 	const component = env.registrations.get("dsh-btw#btw")({}).type;

@@ -29,6 +29,8 @@ dsh plugin --profile web add file:/absolute/path/to/plugin
 
 npm 的 `0.0.3` 不包含这些未发布修复。开发验证请使用上面的本地目录安装方式；本地版本号暂不提升，验证后再统一发 patch。
 
+更新本地代码后也必须重启 `dsh web`，不能只刷新浏览器。若模型菜单提示 `unknown method: models`，说明运行中的宿主未提供新版方法；待任务结束后重启宿主并刷新，再重试加载模型。
+
 ```sh
 npm run check
 npm test
