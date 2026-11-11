@@ -120,25 +120,27 @@ coldSnapshot 在 delete 后按本地 adapter 写回，也通过 domain/changed �
 
 ### C. 公开 backend 扩展：已接入产品
 
-公开 registry / routing 允许在 **domain 首次打开前** 将 `session_projcache` 路由到 btw 提供的 backend，底层仍委托 JSON，只对有本人有效墓碑的 key 拒写，其他 key 原样代理。这不是替换运行中对象，不必改宿主源码，也不等于全局禁缓存；**routing 会影响该 domain 的所有 Session 的 backend 路径，只是不关闭其他 Session 的缓存**。产品实现改为插件启动时自动合并该路由（仅内存，不写用户配置文件）：未激活的 entry 直接改 `options.config`，已激活的走 `Entry.update({config})`（`fiber.update(config, true)`，不经过 `tree.commit`，因此不会落盘）；`EntryTree.update` 会提交写盘，禁止使用。用户已显式路由到其他 backend、默认 backend 非 `json`、或配置含未求值的 `!!js` 节点时一律不合并，`nativeOpen` 保持 fail-closed。
+公开 registry / routing 允许在 **domain 首次打开前** 将 `session_projcache` 路由到 btw 提供的 backend，底层仍委托 JSON，只对有本人有效墓碑的 key 拒写，其他 key 原样代理。这不是替换运行中对象，不必改宿主源码，也不等于全局禁缓存；**routing 会影响该 domain 的所有 Session 的 backend 路径，只是不关闭其他 Session 的缓存**。当前产品通过配置解析 waterfall 在每次解析的**有效配置**中合并保护路由，原始配置与持久化文件不变。旧的一次性 Entry 修改会被欢迎页/设置保存触发的 Include 重建冲掉，已不作为真实宿主方案；已有域仅在安装策略时用 `fiber.update(raw, true)` 重新解析一次，后续重建自然应用同一配置策略，不事后循环热修。`EntryTree.update` 会提交写盘，禁止用于临时路由。用户已显式路由到其他 backend、默认 backend 非 `json`、或配置含未求值的 `!!js` 节点时一律不合并，`nativeOpen` 保持 fail-closed。
 
 #### 产品接入（nativeOpen / nativeClose）
 
-- **启用**：插件启动时自动合并 `routes.session_projcache: btw-native-json`（仅内存；rc.1 的 patch config 是整体替换、无深合并，故不能靠 bundle patch 完成，且绝不写用户配置）。无法安全合并或 gate 未绑定时，`nativeOpen` 明确报错拒绝创建；旧 ask/open 协议保留可用，前端显示错误，不创建临时会话。
-- **创建**：`nativeOpen` 接受 `{}` 或 `{workspaceId}`。指定已有工作区时，以公开 registry 验证身份并使用该工作区 cwd，创建独立 root Session；只挂接自己的 Session，不复制来源历史或草稿。未指定时使用独占空目录 `$DSH_HOME/.btw-native-workspaces/_no-cwd/<UUID>` 和专属 workspace 注册。两种方式都先核对 UUID 全新并在任何 Session 存在前落持久拒写标记，再由 `agents.create()` 创建普通 root Session 并调用 `attachSession`。
+- **启用**：配置解析策略持续保留有效 `routes.session_projcache: btw-native-json`（rc.1 的 patch config 是整体替换、无深合并，故不能靠固定 bundle patch；绝不写用户配置）。无法安全合并或 gate 未绑定时 `nativeOpen` 仍拒绝创建；前台不弹错误，客户端有限重试并保留诊断，不创建未受保护会话。旧 ask/open 协议独立可用。
+- **创建**：`nativeOpen` 接受 `{}` 或 `{workspaceId}`。当前 UI 先保留临时模式、等待原生选区提交，再发送明确 workspaceId；以公开 registry 验证已有工作区身份并使用其 cwd，创建独立 root Session；只挂接自己的 Session，不复制来源历史或草稿。旧兼容 API 未指定时使用独占空目录 `$DSH_HOME/.btw-native-workspaces/_no-cwd/<UUID>` 和专属 workspace 注册。两种方式都先核对 UUID 全新并在任何 Session 存在前落持久拒写标记，再由 `agents.create()` 创建普通 root Session 并调用 `attachSession`。
 - **关闭**：`nativeClose` 需要 `{sessionId}` 且必须返回 `burned: true`（未确认 burned 视为失败）。关闭时先保留拒写标记并等待 Agent dispose/idle，再清理本人 JSONL 和 workspace 成员关系；已有工作区仅 detach 本人 Session，不删除用户目录或其他会话。专属 workspace 则移除注册和独占目录，最后清理本人恢复记录与 archive/pin 条目。
-- **残留边界**：隔离浏览器实测，关闭后 session 目录、project 目录、workspace 目录、records 全无，workspace registry 回到空，只剩 `.btw-native-deny/<uuid>.json` 永久墓碑（按设计保留）；临时 workspace 打开期间作为「btw」分组出现在宿主工作区列表，关闭即消失。
+- **残留边界**：隔离浏览器实测，关闭后 session 目录、project 目录、workspace 目录、records 全无，workspace registry 回到空，只剩 `.btw-native-deny/<uuid>.json` 永久墓碑（按设计保留）；这是旧 `{}` 独占路径的历史测量；当前 UI 只关联已有/宿主选定工作区，不额外创建「btw」分组。
 - **不承诺**：不是 OS 沙箱（普通 preset 权限策略仍适用）；共享附件 blob 不删；不做安全擦除；不保证绕过 gate 的写入；跨进程互斥/并发宿主/断电等场景未覆盖。
-- **验证**：`npm run check`、`npm test`（198/198）、`git diff --check`、`node scripts/native-cache-backend-probe.mjs`、`node scripts/native-cache-cross-process-probe.mjs`、`node scripts/smoke-isolated.mjs`、`npm pack --dry-run`（15 files）均通过；隔离 Web 宿主实测打开→原生发送→回答→结束→无残留。
+- **早期验证（非当前 UI 约定，最新见 verification.md 顶部）**：`npm run check`、`npm test`（当时 198/198）、`git diff --check`、`node scripts/native-cache-backend-probe.mjs`、`node scripts/native-cache-cross-process-probe.mjs`、`node scripts/smoke-isolated.mjs`、`npm pack --dry-run`（15 files）均通过；隔离 Web 宿主实测打开→原生发送→回答→结束→无残留。
 
 研究脚本：`scripts/native-cache-backend-probe.mjs`；真实 CLI fixture：`test/fixtures/native-cache-backend-host.mjs`。以下为本轮新增记录，区别于前文已删除的 `/tmp` 反例脚本；研究阶段未接入 `lib/` 或修改用户配置，产品接入（`lib/native-cache.js` 等）见上节。
 
 #### 启动路由与配置优先级（rc.1 实查 + 真 CLI 验证）
 
+以下保留静态启动探针的观察。当前策略会持续保护默认 JSON 原始配置的重建；显式 foreign route（包括显式路由到 json）、未知 backend 或停用插件才属于不能承诺保护的配置边界。
+
 - `dsh-base/cordis.patch.yml` 的 `storage-domain` 默认 `config.backend: json`，cache 服务在 `Service.init` 首次 open `session_projcache`。`storage-domain.apply` 会等待 **默认 backend 及所有 routes backend 的 lifecycle service key**，故新插件需先 `storage.backend.register('btw-research', backend)` 再提供 `storageBackendServiceKey('btw-research')`。
 - `dsh/lib/profile-boot-*.js` 和 `dsh-app-boot/lib/index.js:1899–1921`：全部 bundle patch（manifest 顺序）→ profile patch → HOME patch → CLI `--patch`（参数顺序）→ telemetry 环境开关；先合成 entry tree，再激活插件。**后加入的 bundle 可以用自己的 patch 覆盖 `storage-domain` 的 config**，不要求手改用户 profile patch 才能路由。本轮真实 CLI 使用隔离 custom profile，base bundle 插入安装版 storage/domain/cache，扩展 bundle 自己插入 backend 行并设置 route；profile/HOME/CLI 仅覆盖 fixture 的 precedence 哨兵，route 不在这些用户层中设置。宿主 readiness 后断言拿到 `cli-last`。
 - **config 整体替换，不是深合并**（`cordis-plugin-include.applyPatches`）。第一次只给 routes 的实验确实失败，丢失必需的 backend；修正为完整 `{ backend: 'json', routes: { session_projcache: 'btw-research' } }` 后真 CLI 通过。生产已有其他 routes 时必须保留完整配置；固定 bundle patch 无法自动安全合并未知用户 routes。后续 bundle/profile/HOME/CLI 覆盖成默认 route、未知 backend、禁用该插件，均不能承诺屏障；必须拒绝创建临时会话而非静默降级。
-- **仅 insert/register 不足以生效**；产品 `cordis.yml` 只 insert 并注册 backend，路由由插件启动时通过 loader entry 在内存中合并（不改用户配置、不落盘）。无法安全合并（用户已路由到其他 backend、默认 backend 非 `json`、配置含未求值的 `!!js`）或 gate 未绑定时，`nativeOpen` 报错拒创，前端显示错误。运行中注册新名字不会迁移已 open domain；没有受支持的热替换/逐 key route。已启动的默认宿主、旧 writer 不经 wrapper、或无法控制最终 startup composition 时，不可作此承诺。后续 bundle/profile/HOME/CLI 覆盖成默认 route、未知 backend、禁用该插件，均不能承诺屏障；必须拒绝创建临时会话而非静默降级。
+- **仅 insert/register 不足以生效**；产品 `cordis.yml` 只 insert 并注册 backend，路由通过每次有效配置解析合并（不改原始配置、不落盘；默认 JSON 的原始配置重建不会丢失保护）。无法安全合并（用户已路由到其他 backend、默认 backend 非 `json`、配置含未求值的 `!!js`）或 gate 未绑定时，`nativeOpen` 报错拒创，客户端后台有限重试、不弹错误。运行中注册新名字不会迁移已 open domain；没有受支持的热替换/逐 key route。已启动的默认宿主、旧 writer 不经 wrapper、或无法控制最终 startup composition 时，不可作此承诺。后续 bundle/profile/HOME/CLI 覆盖成默认 route、未知 backend、禁用该插件，均不能承诺屏障；必须拒绝创建临时会话而非静默降级。
 
 #### 完整 Web 续测（增量记录）
 

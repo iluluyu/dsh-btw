@@ -15,7 +15,7 @@ $DSH_HOME/.btw-temp-records/<uuid>.json
 
 ## 原生普通 Session（显式启用）
 
-无来源 btw 可选用 DSH 原生普通对话页：`/btw nativeOpen` 创建 btw 独占的普通 root Session，前端用公开 `uiWorkspace.openSession(id)` 打开完整原生 conversation（composer、`+`、权限/模型选择、思考与消息渲染均由宿主提供）。路由由插件启动时自动绑定（内存合并，绝不写用户配置）；用户显式路由到其他 backend 或 gate 未绑定时 `nativeOpen` 明确报错拒绝创建，前端显示错误，不创建临时会话，旧 ask/open 协议保留可用。
+无来源 btw 可选用 DSH 原生普通对话页：`/btw nativeOpen` 创建 btw 独占的普通 root Session，前端用公开 `uiWorkspace.openSession(id)` 打开完整原生 conversation（composer、`+`、权限/模型选择、思考与消息渲染均由宿主提供）。路由由插件在每次配置解析时施加到有效配置（原始配置与持久化文件不变，设置保存重建也不会丢失）；用户显式路由到其他 backend 或 gate 未绑定时 `nativeOpen` 明确报错拒绝创建，客户端有限重试、后台保留诊断而不弹错误，不创建未受保护会话，旧 ask/open 协议保留可用。
 
 创建前必须先对本人 UUID 落持久拒写标记（pre-create tombstone，gate 对本人 UUID 的 `session_projcache` 写入拒写、其他 key 透传），再创建 Session，因此投影缓存从不落盘。优先使用当前 Session 所属工作区并仅挂接本人 Session；无工作区时 cwd 是独占空目录，并为该目录建立专属 WorkspaceRegistry 注册 + `attachSession`。不从 HOME 或启动 cwd 猜测工作区：
 

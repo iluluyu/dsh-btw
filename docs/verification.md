@@ -10,6 +10,8 @@
 - 实际浏览器使用全新隔离 HOME/DSH_HOME、无凭据、未发送消息：Continue → 开启临时模式 → 选择 project-a → 成功进入原生临时 root，输入框计算样式 dashed；再选择 project-b → 切入新 root，模式保持；退出后前台无清理/失败文本，两个 native 恢复目录为空，用户项目未删除，控制台无报错。不是 Windows/macOS 桌面 GUI 真机验收。
 - Windows/macOS/Linux 验证分支 CI 结果以本轮 commit 的 workflow run 为准；不升版本，不改 main，不发布新 Release。
 
+以下为更早时点的验证记录；早期的前台错误/closing、先选工作区和一次性 Entry 路由修改，均已由本节的模式意图/后台回收与有效配置策略替代。
+
 ## 本轮：桌面优先的原生临时聊天边界
 
 - 复现并修复大于 2^53 的目录 inode 在 BigInt/Number 间丢精度，导致空会话关闭误报目录替换；同步修复 sidecar 身份精度。3 项回归覆盖正常关闭、真实目录替换拒删、stat→unlink 间替换拒删。
