@@ -34,4 +34,4 @@ jobs:
         with:
           node-version: 26
       - run: npm install --ignore-scripts --no-audit --no-fund
-      - run: node --test test/native-workspace-identity.test.js test/native-cache-binding.test.js test/host-platform.test.js test/client-features.test.js
+      - run: node --test test/native-workspace-identity.test.js test/native-cache-binding.test.js test/native-route.test.js test/host-platform.test.js test/client-features.test.js

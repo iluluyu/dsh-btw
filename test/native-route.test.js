@@ -2,7 +2,7 @@
 // and it must never rewrite the user's configuration files.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { bindNativeRoute, NATIVE_BACKEND } from "../lib/index.js";
+import { apply, bindNativeRoute, installNativeRoute, NATIVE_BACKEND } from "../lib/index.js";
 
 const ENTRY_NAME = "@deepseek-ai/dsh-storage-domain";
 
@@ -70,6 +70,47 @@ test("bindNativeRoute refuses configs it cannot merge safely", () => {
 	reason(bindNativeRoute({ get: () => loaderWith([entryWith(undefined)]) }));
 	reason(bindNativeRoute({ get: () => loaderWith([entryWith(["not", "an", "object"])]) }));
 	reason(bindNativeRoute({ get: () => loaderWith([entryWith({ backend: "json", routes: [] })]) }));
+});
+
+test("host bootstrap installs the stable effective-config hook rather than a one-shot raw edit", () => {
+	const raw = { backend: "json" }, entry = entryWith(raw), hooks = new Map();
+	apply({ get: () => loaderWith([entry]), on(name, fn) { hooks.set(name, fn); }, plugin() {}, inject() {} });
+	assert.equal(typeof hooks.get("internal/config"), "function");
+	assert.equal(entry.options.config, raw);
+	assert.deepEqual(raw, { backend: "json" });
+});
+
+test("effective native routing survives settings recomposition without changing raw or persisted config", async () => {
+	const updates = [], raw = { backend: "json", routes: { other: "json" } };
+	const entry = entryWith(raw, { fiber: { effectiveConfig: { backend: "json", routes: {} }, update(config, noSave) { updates.push([config, noSave]); } } });
+	const hooks = new Map(), loader = loaderWith([entry]);
+	const ctx = { get: () => loader, on(name, fn) { hooks.set(name, fn); } };
+	assert.equal(installNativeRoute(ctx), undefined);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.deepEqual(updates, [[raw, true]], "one no-save effective resolution, not an injected raw config");
+	assert.deepEqual(entry.updates, []);
+	const hook = hooks.get("internal/config");
+	assert.equal(typeof hook, "function");
+	for (const incoming of [{ backend: "json" }, { backend: "json", routes: { other: "json" } }]) {
+		entry.options.config = incoming; // Include rebuilt this from an unrelated UI settings save.
+		const before = structuredClone(incoming);
+		const effective = hook({ entry, parent: { fiber: {} } }, () => incoming);
+		assert.equal(effective.routes.session_projcache, NATIVE_BACKEND);
+		assert.deepEqual(incoming, before, "the config passed to persistence remains unmodified");
+		assert.equal(entry.options.config, incoming);
+	}
+	assert.equal(updates.length, 1, "recomposition does not schedule another route restart");
+});
+
+test("effective routing is scoped to the storage root and preserves explicit foreign configuration", () => {
+	const entry = entryWith({ backend: "json" }), hooks = new Map();
+	installNativeRoute({ get: () => loaderWith([entry]), on(name, fn) { hooks.set(name, fn); } });
+	const hook = hooks.get("internal/config");
+	const foreign = { backend: "json", routes: { session_projcache: "sqlite" } };
+	assert.equal(hook({ entry, parent: { fiber: {} } }, () => foreign), foreign);
+	const child = { backend: "json" };
+	assert.equal(hook({ entry, parent: { fiber: { entry } } }, () => child), child);
+	assert.equal(hook({ entry: {}, parent: { fiber: {} } }, () => child), child);
 });
 
 test("bindNativeRoute reports missing loader or entry instead of guessing", () => {

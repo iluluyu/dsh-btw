@@ -337,7 +337,9 @@ test("client defers required capabilities including overlay and global entry, an
 	assert.equal(globalButton.props["aria-label"], "开启全局临时聊天");
 	globalButton.props.onClick();
 	assert.deepEqual(fixture.selectedPanels, [], "missing public navigation never opens a fake page");
-	assert.match(JSON.stringify(fixture.components.get("shell.overlay")()), /宿主缺少安全的临时会话导航能力/);
+	assert.equal(fixture.components.get("shell.overlay")(), null, "capability discovery stays silent in the native UI");
+	assert.equal(globalEntry({}).props["aria-pressed"], true, "temporary mode can wait for the public host services");
+	globalEntry({}).props.onClick();
 	assert.equal(fixture.calls.length, 0, "unavailable safety capability does not create a session");
 	assert.equal(fixture.components.get("plugins.row.config")({ view: "summary" }), "侧问与临时聊天设置");
 	await fixture.scope.set("showTempEntry", false);

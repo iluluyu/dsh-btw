@@ -21,13 +21,13 @@
 - **宿主 `lib/index.js`**：模型解析、子 agent、发送截止时间、持久化恢复记录和安全删除；显式路由启用时另有 `nativeOpen`/`nativeClose`——创建前拒写墓碑、已有或独占 workspace 关联与关闭屏障，实现于 `lib/native-cache.js`（gate backend）与 `lib/native-cache-workspaces.js`。保持既有清理屏障与真实宿主适配，不由 UI 删除文件。
 - **固定面板**：与其余形态共享同一个 controller 和 child；第二问只发送新问题，历史由独立 DSH child 保留，不重放手工拼接的问答。默认高 200px、宽度始终与宿主 composer 外框对齐，仅可调整高度；`/dock-v3` 只保存手动高度并忽略旧版宽度与旧默认，不删除旧数据或改变浮窗几何。收到首个有效回复后折叠编辑区，圆形箭头可继续输入，草稿保留。消息独立滚动，输入区保持可见。来源参考不显示为 btw 消息，也不等于 fork：recent 取稳定的已完成 `legacy.nodes`；all 走官方 `session.events` 固定 cursor 分页和有界缓存；on-demand 搜索最多 48k 的授权尾部快照。容量由宿主 `resolveModelInfo` 查询。
 
-项目会话标题栏的 btw 优先打开原生侧栏；侧栏服务不可用时退回小窗。无来源新对话入口优先经 `/btw nativeOpen` 使用 DSH 原生普通对话页：btw 启动时自动把 `routes.session_projcache` 指向 `btw-native-json`（内存合并，不写用户配置），随后创建独占普通 root Session 并用公开 `uiWorkspace.openSession(id)` 打开；原生 composer、`+`、权限/模型选择、思考与消息渲染全部由宿主提供，btw 只按 `[data-conversation-session="<owned id>"]` 作用域给 composer 卡与用户气泡加虚线描边，并在全局入口提供「结束临时聊天」（原生 hero 页不渲染 header utilities）。自动路由被用户自定义配置挡住或 gate 未绑定时 `nativeOpen` 明确报错，前端显示错误，不创建临时会话，旧 ask/open 协议保留可用；拒写门、默认继承的当前工作区（没有时使用独占 workspace）与关闭顺序详见 `native-cleanup-algorithms.md` 与 `temporary-chat-storage.md`。打开侧栏初期仅做一次有界的默认页竞态修正，用户主动操作后取消，不持续抢占其他标签。固定面板的全屏安全绑定来源会话的 DSH 原生侧栏 tab，用户退出原生全屏时返回原固定面板。侧栏不显示 btw 自己的模式选择或最小化按钮，侧栏中新建仍留在侧栏。关闭 btw 结束并清理该聊天；只有该 tab 时收起侧栏，不隐藏其他 tab。浮窗和固定面板的收起行为不变。
+项目会话标题栏的 btw 优先打开原生侧栏；侧栏服务不可用时退回小窗。无来源新对话入口优先经 `/btw nativeOpen` 使用 DSH 原生普通对话页：btw 启动时自动把 `routes.session_projcache` 指向 `btw-native-json`（配置解析时只合并有效配置，不改原始/持久化配置），随后创建独占普通 root Session 并用公开 `uiWorkspace.openSession(id)` 打开；原生 composer、`+`、权限/模型选择、思考与消息渲染全部由宿主提供，btw 只按 `[data-conversation-session="<owned id>"]` 作用域给 composer 卡与用户气泡加虚线描边，并在全局入口提供「结束临时聊天」（原生 hero 页不渲染 header utilities）。自动路由被用户自定义配置挡住或 gate 未绑定时 `nativeOpen` 仍拒绝不安全创建；客户端有限重试后退出未成功的模式，诊断留在后台而非聊天弹层，不把普通对话伪装成临时会话，旧 ask/open 协议独立保留；拒写门、原生工作区选择接续（旧独占 API 仅兼容/恢复保留）与关闭顺序详见 `native-cleanup-algorithms.md` 与 `temporary-chat-storage.md`。打开侧栏初期仅做一次有界的默认页竞态修正，用户主动操作后取消，不持续抢占其他标签。固定面板的全屏安全绑定来源会话的 DSH 原生侧栏 tab，用户退出原生全屏时返回原固定面板。侧栏不显示 btw 自己的模式选择或最小化按钮，侧栏中新建仍留在侧栏。关闭 btw 结束并清理该聊天；只有该 tab 时收起侧栏，不隐藏其他 tab。浮窗和固定面板的收起行为不变。
 
 ## 临时状态与所有权
 
 `idle → configuring → opening → active → closing → idle`。首发开启失败回到配置并显示错误；清理失败进入 `error`，保留子会话 ID 供重试。模式切换只改变展示，不结束对话；关闭/X 才结束当前聊天；收起仅回到原 btw 按钮，聊天与草稿保留。模式迁移或结束会移除旧的本插件侧栏标签，不显示空标签和“恢复临时聊天”组件。
 
-child 流程的全局新建不带 cwd/父会话，强制无父上下文；原生 UI 入口按宿主 New Session 规则选择当前或最近的已有工作区，空白桌面页也可继承；Web 没有可用工作区时提示先选择，不自动创建 btw 分组，同样无父会话。底层旧 `{}` API 的独占目录恢复路径仅为兼容保留，不再是当前 UI 的默认行为。模型菜单只显示一个「默认」：有来源时请求 `current`，无来源时请求 `host`；自选仍请求明确模型，不修改主会话模型。旧配置 `host/current` 在 UI 中都归为默认。继承的来源文本只作为请求参考，不插入 btw 消息列表；界面只显示这条 btw 自身的问答。
+child 流程的全局新建不带 cwd/父会话，强制无父上下文；原生 UI 入口按宿主 New Session 规则选择当前或最近的已有工作区，空白桌面页也可继承；Web 没有可用工作区时保留已选临时模式，等待宿主工作区选择提交后继续，不弹错误、不自动创建 btw 分组，同样无父会话。底层旧 `{}` API 的独占目录恢复路径仅为兼容保留，不再是当前 UI 的默认行为。模型菜单只显示一个「默认」：有来源时请求 `current`，无来源时请求 `host`；自选仍请求明确模型，不修改主会话模型。旧配置 `host/current` 在 UI 中都归为默认。继承的来源文本只作为请求参考，不插入 btw 消息列表；界面只显示这条 btw 自身的问答。
 
 - 每条聊天的代次隔离开启/结束/卸载，轮次标识隔离每轮回复；旧回包只能回到原聊天，不能写入新聊天或当前切换后的聊天。
 - 开启 attempt 持有原连接、上下文取消器、open promise 和子会话 ID；send/poll/close 始终使用这个连接。迟到 open 先交回 ID，再由同一 close 屏障释放，不另开清理支路。
@@ -36,14 +36,16 @@ child 流程的全局新建不带 cwd/父会话，强制无父上下文；原生
 ## 原生临时聊天的服务生命周期约束
 
 - 原生 composer、附件、权限、模型、消息展示仍归宿主；btw 只为本人 Session 的输入框和消息气泡加作用域虚线。工作区发现不调用 `create`，不自建默认工作区或猜测桌面启动 cwd。
-- UI 用 `idle/opening/active/closing` 管理一个原生 owner；开启中可以取消/恢复意图，关闭中可以预约/取消重开，重开须在本人清理确认后且导航上下文未变才执行。显式关闭当前本人视图通过公开 `uiWorkspace.archiveSession` 清空 mainView，不归档/恢复来源会话；归档只是 UI 退出步骤，随后仍必须完成实际 burn 并清掉本人的 archive 标记。导航到其他面板、会话或卸载时不抢回界面。
+- UI 的临时模式意图（`idle/choosing/opening/active`）、创建 request token 和后台 owner 回收表相互独立。工作区选择发布的多个投影在微任务末统一读取；新工作区的原生空白会话属于当前临时流程，不当作取消。切到历史对话/其他面板则退出模式。旧 request 返回的 owner 在后台回收，不阻塞新选择，也不写回新模式状态；没有前台 closing/清理/错误状态。本人视图通过公开 archiveSession 退出，但 archive 不等于 burn，后台仍须等待真实删除确认。
 - 大文件 ID 的所有权校验从写入到 handle stat、目录 lstat、sidecar unlink 都保持 BigInt；普通 Number 只用于不涉及身份的类型/尺寸读取，不能混入 inode 比较。
 
 
 - 缓存存储适配器可以跨可选注入 scope 复用，但清理回调必须在执行时重新取得当前 gate、workspaceRegistry 和 sessions；不得把首次注入的 domain/entity 当作永久服务，否则重载后会报 `domain 'workspace' is closed`。
-- 一次 native open 固定自己的服务代次，异步准备、preset 挂载和 Session 关联后都需核对代次；依赖已重建时取消本次开启并清理本人预留资源，不混用新旧服务。客户端在 host 返回 ID 后、任何 workspace adopt await 之前登记 owner；导航、连接或注入服务变更必须在 adopt 前后及目录刷新后核对，过期结果只通过创建连接清理，不抢回页面。
+- 一次 native open 固定自己的服务代次，异步准备、preset 挂载和 Session 关联后都需核对代次；依赖已重建时取消本次开启并清理本人预留资源，不混用新旧服务。客户端在 host 返回 ID 后、目录刷新前登记 owner；连接/注入 scope、请求 token 和目标工作区必须在异步边界核对，过期结果只通过创建连接在后台回收，不抢回页面。
 - 父 scope 与可选依赖 scope 并发卸载时，先设置 shutdown fence、等待在途开启，再共享同一 native close 屏障；可选依赖在本人 writer/注册清理结束前不得释放。
 - `burned: true` 必须有证据。重载丢失内存回执时，只能在永久拒写标记存在、本人恢复记录及 live/durable Session 和 workspace 引用均已不存在时确认已完成；该路径只确认，不删除未知 ID。清理未完成则保留记录并报告失败。
+
+- 原生保护路由由公开配置解析 waterfall 施加到有效配置。仅启动时改一次 Entry 内存选项不够：欢迎页/设置保存会让 Include 用原始配置重建，丢失该修改。有效配置策略在每次解析时保留路由，不写用户配置、不在配置提交后循环热修域；显式 foreign route 仍不覆盖。
 
 ## 历史验收顺序
 

@@ -30,11 +30,19 @@ export function apply(ctx) {
 		if (method === 'workspaces') return { ok: true, value: await withWorkspaces(registry => registry.list().map(workspace => ({
 			workspaceId: workspace.id, title: workspace.title, path: workspace.path, sessionIds: workspace.sessionIds,
 		}))) };
-		assert.equal(method, 'restart');
+		assert.ok(method === 'restart' || method === 'recompose');
 		const entries = [...ctx.loader.entries()];
-		const entry = entries.find(entry => entry.options.id === 'btw');
-		assert.ok(entry?.fiber, 'isolated btw entry must be active');
-		await entry.fiber.restart();
+		const entry = entries.find(entry => method === 'restart' ? entry.options.id === 'btw' : entry.options.name === '@deepseek-ai/dsh-storage-domain');
+		assert.ok(entry?.fiber, 'isolated target entry must be active');
+		if (method === 'restart') await entry.fiber.restart();
+		else {
+			// UI settings saves re-resolve the original raw config without the
+			// plugin's ephemeral route. This must never disable the effective gate.
+			const raw = { ...entry.options.config, routes: { ...entry.options.config.routes } };
+			assert.equal(raw.backend, 'json');
+			delete raw.routes.session_projcache;
+			await entry.fiber.update(raw, true);
+		}
 		// Root restart does not join newly mounted asynchronous child scopes.
 		let scope;
 		try {
@@ -47,6 +55,6 @@ export function apply(ctx) {
 			});
 			await new Promise(resolve => setImmediate(resolve));
 		} finally { await scope?.dispose(); }
-		return { ok: true, value: { restarted: true } };
+		return { ok: true, value: { restarted: method === 'restart', recomposed: method === 'recompose' } };
 	}));
 }

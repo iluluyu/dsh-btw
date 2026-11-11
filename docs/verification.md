@@ -1,5 +1,15 @@
 # 本地验证记录
 
+## 本轮：先临时模式后工作区，后台安静回收
+
+- 用真实安装版 UI 复现用户顺序，确认不仅是按钮状态：首次 Preview Notice 的 Continue 保存欢迎设置后，Include 重建 storage-domain 原始配置，将旧的一次性内存路由冲掉。观测到 binding 从 ok 变为拒绝、有效 routes 为空、保护 unit 列表为空；此前只测 RPC 未覆盖这一步。
+- 改为 `installNativeRoute` 在配置解析 waterfall 中为每次有效配置保留保护路由。原始配置仍为 `{backend: json}`，有效配置含 `session_projcache: btw-native-json`；不写用户文件，不在设置提交后循环热修域。新增纯配置/启动调用点回归，以及真实宿主 raw config recompose 冒烟。
+- 前台模式意图、创建 request token、后台 owner 回收表分离。可先开启模式再选择工作区；原生选择发布的投影在微任务末读取，注册目录本身不抢先取消宿主导航，新 blank 提交后接续临时模式。开启中或已进入后换工作区均转向新原生会话，旧结果后台回收，历史/面板导航仍可退出。
+- 前台没有 closing/清理/失败弹层；退出即时回到普通模式，新模式不等待旧 burn。后台回收和开启暂时失败均有限重试；删除未确认的 owner 不丢失，保留服务端恢复证据，耗尽重试写诊断日志，后续操作可重试，不假报 burned、不将普通会话伪装为成功的临时会话。
+- 本地 `npm run check`、278 项全量测试、扩展隔离 smoke、`git diff --check` 通过；随后新增并通过公开视图激活回调内取消的重入回归（客户端 148 项重测通过，整体新增至 279 项）。测试覆盖先模式后选区、创建中/活动时切区、旧 owner 回调隔离、后台重试及耗尽后保留、无前台错误、有效路由重解析与 foreign 配置保留。
+- 实际浏览器使用全新隔离 HOME/DSH_HOME、无凭据、未发送消息：Continue → 开启临时模式 → 选择 project-a → 成功进入原生临时 root，输入框计算样式 dashed；再选择 project-b → 切入新 root，模式保持；退出后前台无清理/失败文本，两个 native 恢复目录为空，用户项目未删除，控制台无报错。不是 Windows/macOS 桌面 GUI 真机验收。
+- Windows/macOS/Linux 验证分支 CI 结果以本轮 commit 的 workflow run 为准；不升版本，不改 main，不发布新 Release。
+
 ## 本轮：桌面优先的原生临时聊天边界
 
 - 复现并修复大于 2^53 的目录 inode 在 BigInt/Number 间丢精度，导致空会话关闭误报目录替换；同步修复 sidecar 身份精度。3 项回归覆盖正常关闭、真实目录替换拒删、stat→unlink 间替换拒删。

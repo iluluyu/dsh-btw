@@ -142,6 +142,7 @@ async function nativeRoundTrip(origin, cookie) {
 	// model call is needed to expose open/close and workspace ownership bugs.
 	const project = await rpc(origin, 'btw-smoke-lifecycle', 'project', {}, cookie);
 	for (let turn = 0; turn < 8; turn++) {
+		if (turn === 0 || turn === 4) assert.equal((await rpc(origin, 'btw-smoke-lifecycle', 'recompose', {}, cookie)).recomposed, true);
 		const opened = await rpc(origin, 'btw', 'nativeOpen', { workspaceId: project.workspaceId }, cookie);
 		assert.match(opened.sessionId, /^[0-9a-f-]{36}$/i);
 		const id = opened.sessionId;
@@ -291,7 +292,7 @@ try {
 	await concurrentTemps(url.origin, cookie);
 	console.log('ok: concurrent temporary chats own independent records and close independently');
 	await nativeRoundTrip(url.origin, cookie);
-	console.log('ok: 8 empty native chats inherit the selected workspace; concurrent close and plugin reload preserve the user workspace without adding btw groups');
+	console.log('ok: 8 empty native chats retain effective routing across raw config recomposition, inherit the selected workspace and close independently without extra btw groups');
 	assert.doesNotMatch(output, activationFailure, 'activation error in log');
 } catch (error) {
 	failed = true;

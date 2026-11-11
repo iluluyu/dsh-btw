@@ -1,7 +1,7 @@
 # One Loader source: btw mounts its backend through the public child plugin API.
-# rc.1 patches replace whole config, with NO routes deep-merge. index.js merges
-# the protected cache route through the Loader's in-memory entry API instead;
-# it preserves storage-domain.backend and unrelated/explicit user routes.
+# rc.1 patches replace whole config, with NO routes deep-merge. index.js adds
+# the protected route to effective config through the config-resolution waterfall;
+# raw files and unrelated/explicit user routes stay unchanged on settings saves.
 # The bundle must not overwrite user storage config. Unsupported configurations
 # keep nativeOpen fail-closed; legacy ask/open APIs remain independent.
 - insert:
