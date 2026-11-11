@@ -104,7 +104,8 @@ test("source-free entry uses native RPC and closes only its owned session", asyn
 	assert.ok(heroClose.children.includes("临时聊天"));
 	assert.equal(heroClose.children[0].props.active, true, "active badge shows a check mark");
 	heroClose.props.onClick(); await tick();
-	assert.deepEqual(calls, ["owned"]); assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"]);
+	assert.deepEqual(calls, [], "ending never navigates back or archives a previous window");
+	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"]);
 	env.cleanup();
 });
 
@@ -127,7 +128,7 @@ test("native open inherits the selected Session's workspace without sending its 
 	assert.deepEqual(JSON.parse(JSON.stringify(env.calls[0][2])), { workspaceId: "workspace-one" });
 	assert.deepEqual(f.navigation, [["open", "owned"]]);
 	env.render(env.registrations.get("btw-temp"), { sessionId: "owned" }).props.onClick(); await tick();
-	assert.deepEqual(f.navigation, [["open", "owned"], ["open", "source"]]); env.cleanup();
+	assert.deepEqual(f.navigation, [["open", "owned"]], "ending leaves the user where they are"); env.cleanup();
 });
 
 test("native open is single-flight and a late result cannot override user navigation", async () => {
@@ -167,7 +168,7 @@ test("native selection survives catalog lag and remains usable until explicit cl
 	const button = env.render(env.registrations.get("btw-temp"), { sessionId: "owned" });
 	assert.equal(button.props["aria-label"], "结束临时聊天");
 	button.props.onClick(); await tick();
-	assert.deepEqual(f.navigation, [["open", "owned"], ["archive", "owned"]]);
+	assert.deepEqual(f.navigation, [["open", "owned"]], "no archive and no restore on close");
 	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"]); env.cleanup();
 });
 
@@ -183,13 +184,14 @@ test("native catalog refresh cannot open after user navigates or unloads", async
 	}
 });
 
-test("native restoration uses the retained prior session only while owned remains selected", async () => {
+test("ending the native chat releases the prior reference without navigating back", async () => {
 	const f = nativeFixture(); f.select("old"); let released = 0;
 	f.sessions.retain = (id, options) => { assert.equal(id, "old"); assert.equal(options.source, "controllerOperation"); return { release: () => released++ }; };
 	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
 	env.render(env.registrations.get("conversation.header.leading")).props.onClick(); await tick();
 	const button = env.render(env.registrations.get("btw-temp"), { sessionId: "owned" }); button.props.onClick(); button.props.onClick(); await tick();
-	assert.deepEqual(f.navigation, [["open", "owned"], ["open", "old"]]); assert.equal(released, 1);
+	assert.deepEqual(f.navigation, [["open", "owned"]], "the previous window is not reopened");
+	assert.equal(released, 1);
 	const rpc = env.calls.map(([channel, method, payload]) => [channel, method, JSON.stringify(payload)]);
 	assert.deepEqual(rpc, [["/btw", "nativeOpen", "{}"], ["/btw", "nativeClose", '{"sessionId":"owned"}']]); env.cleanup();
 });
@@ -1642,12 +1644,12 @@ test("focus only raises independent windows; Escape closes only the focused cont
 	for (const event of [{ defaultPrevented: true }, { isComposing: true }, { target: { closest: () => ({}) } }]) env.dispatch("keydown", { key: "Escape", target: inside, ...event });
 	assert.equal(env.calls.filter(c => c[1] === "close").length, 0);
 	env.dispatch("keydown", { key: "Escape", target: inside }); await tick();
-	// Esc parks the focused window: the chat, its child and the draft survive.
-	assert.deepEqual(env.calls.filter(c => c[1] === "close"), []);
+	// Esc ends the focused btw at once and cleans it up in the background.
+	assert.deepEqual(env.calls.filter(c => c[1] === "close").map(c => c[2].sessionId), ["one"]);
 	tree = env.render(overlay); assert.ok(chatWindow(tree, "btw-2")); assert.equal(chatWindow(tree, "btw-1"), undefined);
 	assert.equal(all(tree, n => n.type === "textarea")[0].props.value, "second draft");
 	env.render(entry, projectProps()).props.onClick(); tree = env.render(overlay);
-	assert.equal(all(tree, n => n.props["data-chat-id"]).length, 2, "the parked chat resumes next to the visible one");
+	assert.equal(all(tree, n => n.props["data-chat-id"]).length, 1, "the ended chat is gone, so nothing resumes");
 	assert.equal(all(chatWindow(tree, "btw-2"), n => n.type === "textarea")[0].props.value, "second draft");
 	assert.equal(all(tree, n => n.props["aria-label"] === "切换临时聊天").length, 0);
 	const css = env.styles.join(""); assert.match(css, /\.dsh-btw-desktop\{[^}]*z-index:9000/); assert.match(css, /picker-menu\[data-menu-material\]\{z-index:9010/);
@@ -2630,42 +2632,39 @@ test("floating window retains all mode controls while sidebar has none", async (
 	env.cleanup();
 });
 
-test("Esc parks the small window without ending the chat or losing the draft", async () => {
+test("Esc ends the btw at once instead of parking a window to return to", async () => {
 	const env = await setup({}, { effects: true });
 	const overlay = env.registrations.get("btw");
 	env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
-	let tree = typeTemp(env, overlay, "esc keeps this draft");
+	let tree = typeTemp(env, overlay, "esc clears this");
 	const id = all(tree, n => n.props["data-chat-id"])[0].props["data-chat-id"];
+	button(tree, "发送").props.onClick(); await tick(); await tick();
+	tree = env.render(overlay);
 	env.dispatch("keydown", { key: "Escape", target: escapeTarget(tree, id) }); await tick();
-	assert.equal(env.render(overlay), null, "Esc hides the window");
-	assert.equal(env.calls.some(c => c[1] === "close"), false, "Esc must not end the btw");
+	assert.equal(env.render(overlay), null, "Esc removes the window in the same tick");
+	assert.deepEqual(env.calls.filter(c => c[1] === "close").map(c => c[2].sessionId), ["fixture-child"], "Esc cleans the chat up");
+	assert.doesNotMatch(JSON.stringify(env.render(overlay) ?? {}), /正在清理/, "no cleanup placeholder is rendered");
 	env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
 	tree = env.render(overlay);
-	assert.equal(all(tree, n => n.props["data-chat-id"])[0].props["data-chat-id"], id, "the same chat comes back");
-	assert.equal(all(tree, n => n.type === "textarea")[0].props.value, "esc keeps this draft");
+	assert.notEqual(all(tree, n => n.props["data-chat-id"])[0].props["data-chat-id"], id, "a new btw starts empty; the ended one never returns");
+	assert.equal(all(tree, n => n.type === "textarea")[0].props.value, "", "no draft is restored");
 	env.cleanup();
 });
 
-test("Esc in the fixed panel leaves the panel instead of ending the btw", async () => {
+test("Esc in the fixed panel ends the btw like the small window", async () => {
 	const env = await setup({}, { effects: false });
 	const ask = env.registrations.get("btw-ask"), props = chatProps("origin");
 	env.render(ask, props); // warm the panel like the dock test does
 	env.render(env.registrations.get("btw-trigger"), { sessionId: "origin" }).props.onClick();
 	let tree = env.render(ask, props);
 	if (!all(tree, n => n.type === "textarea").length) { all(tree, n => n.props["aria-label"] === "展开输入框")[0]?.props.onClick(); tree = env.render(ask, props); }
-	let textarea = all(tree, n => n.type === "textarea")[0];
-	assert.ok(textarea, "the fixed panel exposes its editor");
-	textarea.props.onChange({ target: { value: "dock esc draft" } });
-	tree = env.render(ask, props);
 	all(tree, n => n.type === "textarea")[0].props.onKeyDown({ key: "Escape", nativeEvent: {}, target: { closest: () => null }, preventDefault() {}, stopPropagation() {} });
-	tree = env.render(ask, props);
-	assert.equal(env.calls.some(c => c[1] === "close"), false, "Esc never ends the fixed-panel btw");
+	await tick();
+	assert.equal(env.render(ask, props), null, "the fixed panel leaves at once");
+	assert.equal(env.calls.some(c => c[1] === "close"), false, "a chat that never opened needs no cleanup RPC");
 	env.render(env.registrations.get("btw-trigger"), { sessionId: "origin" }).props.onClick();
 	tree = env.render(ask, props);
-	assert.ok(tree, "the panel is reachable again");
-	if (!all(tree, n => n.type === "textarea").length) { all(tree, n => n.props["aria-label"] === "展开输入框")[0]?.props.onClick(); tree = env.render(ask, props); }
-	textarea = all(tree, n => n.type === "textarea")[0];
-	assert.equal(textarea?.props.value ?? "", "dock esc draft", "the draft survives Esc");
+	assert.equal(all(tree, n => n.type === "textarea")[0]?.props.value ?? "", "", "the ended btw does not come back with its draft");
 	env.cleanup();
 });
 
