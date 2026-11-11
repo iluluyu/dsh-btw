@@ -132,21 +132,64 @@ function workspaceChoices(items = []) {
 	};
 }
 
-test("temporary mode selected before workspace waits for the native choice and then enters the temporary conversation", async () => {
+test("temporary mode selected before the workspace enters on registration and absorbs the picker's late blank commit", async () => {
 	const f = nativeFixture(), workspaces = workspaceChoices();
 	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
 	const entry = env.registrations.get("conversation.header.leading");
 	env.render(entry).props.onClick(); await tick();
 	assert.equal(env.render(entry).props["aria-pressed"], true, "the choice of temporary mode survives the workspace picker");
 	assert.deepEqual(env.calls, []); assert.equal(env.render(env.registrations.get("btw")), null);
-	workspaces.set([{ workspaceId: "picked", path: "/project", createdAt: "2026-01-01T00:00:00Z", sessionIds: [] }]); await tick();
-	assert.deepEqual(env.calls, [], "registration alone must not cancel the host's in-flight workspace navigation");
-	f.byId.blank = { blank: true, updatedAt: 1, cwd: "/project", retainedBy: {} };
-	f.select("blank"); await tick(); await tick();
-	assert.deepEqual(JSON.parse(JSON.stringify(env.calls[0][2])), { workspaceId: "picked" });
+	workspaces.set([{ workspaceId: "picked", path: "/project", createdAt: "2026-01-01T00:00:00Z", sessionIds: [] }]); await tick(); await tick();
+	assert.deepEqual(JSON.parse(JSON.stringify(env.calls[0]?.[2])), { workspaceId: "picked" }, "a resolvable workspace enters without waiting for the picker's blank commit");
 	assert.deepEqual(f.navigation, [["open", "owned"]]);
+	// The host finishes its picker flow only now: a blank in the same workspace gets
+	// selected. The open conversation must be re-asserted, never retired and recreated.
+	f.byId.blank = { blank: true, updatedAt: 1, cwd: "/project", retainedBy: {} };
+	workspaces.set([{ workspaceId: "picked", path: "/project", createdAt: "2026-01-01T00:00:00Z", sessionIds: ["blank"] }]);
+	f.select("blank"); await tick(); await tick();
+	assert.equal(env.calls.filter(call => call[1] === "nativeOpen").length, 1, "the picker's own-workspace commit must not spawn a second conversation");
+	assert.deepEqual(f.navigation, [["open", "owned"], ["open", "owned"]], "the owned view is asserted back after the transient blank selection");
 	assert.equal(env.render(entry).props["aria-label"], "结束临时聊天");
-	assert.doesNotMatch(JSON.stringify(env.render(entry)), /清理|失败/); env.cleanup();
+	assert.equal(env.calls.filter(call => call[1] === "nativeClose").length, 0); env.cleanup();
+});
+
+test("a workspace list that populates after mode start enters directly without requiring manual selection", async () => {
+	const f = nativeFixture(), workspaces = workspaceChoices();
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick();
+	assert.deepEqual(env.calls, []); assert.equal(env.render(entry).props["aria-pressed"], true);
+	workspaces.set([{ workspaceId: "default", path: "/default", createdAt: "2026-01-01T00:00:00Z", sessionIds: [] }]); await tick(); await tick();
+	assert.deepEqual(JSON.parse(JSON.stringify(env.calls[0]?.[2])), { workspaceId: "default" }, "the desktop default workspace is inherited once it is observable");
+	assert.deepEqual(f.navigation, [["open", "owned"]]);
+	assert.equal(env.render(entry).props["aria-label"], "结束临时聊天"); env.cleanup();
+});
+
+test("a host that keeps forcing a blank selection stops re-asserting and exits temporary mode cleanly", async () => {
+	const f = nativeFixture(), workspaces = workspaceChoices([{ workspaceId: "w", path: "/w", createdAt: "2026-01-01T00:00:00Z", sessionIds: [] }]);
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick(); await tick();
+	f.byId.fresh = { blank: true, retainedBy: {} };
+	for (let i = 0; i < 4; i++) { f.select("fresh"); await tick(); }
+	assert.equal(env.calls.filter(call => call[1] === "nativeOpen").length, 1, "no second conversation is ever created");
+	assert.deepEqual(f.navigation.filter(step => step[0] === "open"), [["open", "owned"], ["open", "owned"], ["open", "owned"], ["open", "owned"]], "three bounded re-assertions, then the mode stops fighting");
+	assert.equal(env.calls.filter(call => call[1] === "nativeClose").length, 1);
+	assert.equal(env.render(entry).props["aria-pressed"], false); env.cleanup();
+});
+
+test("transient double mainView projections wait instead of killing temporary mode", async () => {
+	const f = nativeFixture();
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	f.byId.hist = { retainedBy: { mainView: 1 } }; f.byId.bl = { blank: true, retainedBy: { mainView: 1 } };
+	env.render(entry).props.onClick(); await tick(); await tick();
+	assert.deepEqual(env.calls, [], "an ambiguous mid-navigation projection is ignored, not fatal");
+	assert.equal(env.render(entry).props["aria-pressed"], true);
+	f.byId.bl.retainedBy.mainView = 0; f.notify(); await tick(); await tick();
+	assert.deepEqual(JSON.parse(JSON.stringify(env.calls[0]?.[2])), { workspaceId: "workspace-one" });
+	assert.deepEqual(f.navigation, [["open", "owned"]]);
+	assert.equal(env.render(entry).props["aria-label"], "结束临时聊天"); env.cleanup();
 });
 
 test("choosing a different workspace during native creation keeps temporary mode and retires the old result in the background", async () => {
@@ -231,7 +274,7 @@ function nativeFixture() {
 	const sessions = { list: { getSnapshot: () => ({ byId }), subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } }, retainInfo: id => ({ getSnapshot: () => byId[id] || { retainedBy: {} }, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } }), retain: () => ({ release() {} }) };
 	const layout = { panelInfo: { getSnapshot: () => ({ activePanelId: panel }), subscribe: fn => { panelListeners.add(fn); return () => panelListeners.delete(fn); } }, beginNavigation: () => new AbortController().signal, selectPanel(id) { panel = id; for (const fn of [...panelListeners]) fn(); } };
 	const uiWorkspace = { openSession(id) { navigation.push(["open", id]); select(id); }, async archiveSession(id) { navigation.push(["archive", id]); if (byId[id]?.retainedBy.mainView) select(null); } };
-	return { sessions, layout, uiWorkspace, byId, select, navigation, workspaces: defaultWorkspace(byId) };
+	return { sessions, layout, uiWorkspace, byId, select, notify, navigation, workspaces: defaultWorkspace(byId) };
 }
 
 test("native opening on a desktop blank view inherits its existing default workspace without creating one", async () => {

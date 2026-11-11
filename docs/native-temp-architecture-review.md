@@ -21,11 +21,11 @@ composer、附件、权限、模型和消息渲染使用原生完整 Conversatio
 
 使用公开 `workspaces.list` 与 `sessions.list` 投影，而不是根据 Web/桌面或启动目录猜测：当前 mainView 的成员归属优先；空白页按官方 New Session 的 recentWorkspace 规则选择（成员最大 updatedAt，空组 createdAt，同值保留宿主顺序）。
 
-桌面已有默认工作区作为普通已有 item 被继承；Web 没有工作区时保留临时模式，等待原生选择真正提交（不能只看到新 workspace 注册就抢先导航）。当前 UI 只发送明确 workspaceId，不调用 workspaces.create/adopt；选择其他工作区的原生 blank 属于同一临时模式，过期 request 的 owner 在后台回收，不创建额外 btw 分组。底层旧 `{}`/cwd API 的独占恢复代码为兼容保留，不是新 UI 的兜底路径。
+桌面已有默认工作区在可解析时直接继承（含启动早期列表短暂为空的场景，不锁定等待手动选择）；Web 没有工作区时保留临时模式，工作区注册即可解析进入，随后迟到的空白页提交由有界重断言吸收（不抢先取消宿主导航，也不回收重建）。当前 UI 只发送明确 workspaceId，不调用 workspaces.create/adopt；选择其他工作区的原生 blank 属于同一临时模式，过期 request 的 owner 在后台回收，不创建额外 btw 分组。底层旧 `{}`/cwd API 的独占恢复代码为兼容保留，不是新 UI 的兜底路径。
 
 ### 客户端生命周期
 
-前台只有 `idle/choosing/opening/active` 模式意图，每个创建 request 独立拥有取消 token；后台 owner 回收表独立管理关闭屏障。退出前台模式不等待磁盘回收，新模式也不受旧 owner 的成功/失败回调影响。旧 request 的迟到 ID 仍有归属并在后台回收；真正的历史/面板导航会取消模式，而工作区选择提交的新 blank 会接续模式。
+前台只有 `idle/choosing/opening/active` 模式意图，瞬时双 mainView 投影等待而非报错终止；每个创建 request 独立拥有取消 token；已开启会话对同工作区/无归属空白页选择最多重断言 3 次后干净退出，不同工作区空白页仍为切换；后台 owner 回收表独立管理关闭屏障。退出前台模式不等待磁盘回收，新模式也不受旧 owner 的成功/失败回调影响。旧 request 的迟到 ID 仍有归属并在后台回收；真正的历史/面板导航会取消模式，而工作区选择提交的新 blank 会接续模式。
 
 显式结束当前本人原生视图时调用公开 archiveSession（仅本人、仅当前会话页），先退出 mainView；后续 nativeClose 仍负责 writer barrier 与删除，且清理本人的 archive 标记。用户已切到其他会话、面板或正在卸载时不导航回旧页面。前台不显示清理进度或错误弹层。回收失败后台有限重试，超出上限继续保留 owner/恢复记录，后续操作或重启可恢复，诊断留在日志；不能把失败当作 burned，也不能跳过 burn。
 
