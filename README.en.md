@@ -32,6 +32,8 @@ Uninstall: `dsh plugin --profile web remove dsh-btw`.
 
 ## Known boundaries
 
+Native temporary chats inherit the host's current or most recent existing workspace, including a blank desktop view; the current entry does not create an extra “btw” group. On the web, choose a workspace first if none exists. Pending discovery never guesses a default directory. Closing dismisses only the owned native view, then completes record cleanup; archiving alone is not proof of deletion.
+
 Temporary chats are stored locally for a short time and logically deleted on close — **never secure erasure**, and remote copies or shared attachment blobs are out of scope. Cleanup supports only the verified default JSONL storage of dsh `0.2.2-rc.1`; custom backends are rejected explicitly rather than silently accepted. A temporary workspace is not an OS sandbox; the ordinary preset's permission policy still applies. Cross-process mutual exclusion, concurrent hosts and power-loss recovery are not claimed. See [storage and cleanup boundaries](docs/temporary-chat-storage.md) and [cleanup algorithms](docs/native-cleanup-algorithms.md) (Chinese).
 
 ## Roadmap

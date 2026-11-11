@@ -63,7 +63,10 @@ async function setup(config = {}, options = {}) {
 	if (options.badSidebar) ctx.inject = () => { throw new Error("unavailable"); };
 	if (options.sidebar || options.layout || options.remote || options.workspace) ctx.inject = (deps, fn) => {
 		if (deps[0] === "uiWorkspace") return options.workspace ? fn(options.workspace) : () => {};
-		if (deps[0] === "workspaces") return options.workspaces ? fn({ workspaces: options.workspaces }) : () => {};
+		if (deps[0] === "workspaces") {
+			const service = Object.hasOwn(options, "workspaces") ? options.workspaces : options.workspace?.workspaces;
+			return service ? fn({ workspaces: service }) : () => {};
+		}
 		if (deps[0] === "configForms") return fn({ configForms: ctx.configForms });
 		if (deps[0] === "remote") {
 			// Cordis activates only with all required services, and a root Remote
@@ -91,7 +94,7 @@ test("source-free entry uses native RPC and closes only its owned session", asyn
 	const sessions = { list: { getSnapshot: () => ({ byId }), subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } }, retainInfo: id => ({ getSnapshot: () => byId[id] || { retainedBy: {} }, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } }) };
 	const layout = { panelInfo: { getSnapshot: () => ({ activePanelId: null }), subscribe: () => () => {} }, beginNavigation: () => new AbortController().signal, selectPanel() {} };
 	const uiWorkspace = { openSession(id) { byId[id] = { retainedBy: { mainView: 1 } }; notify(); }, async archiveSession(id) { calls.push(id); delete byId[id]; notify(); } };
-	const env = await setup({}, { lazy: true, layout, workspace: { uiWorkspace, sessions, layout }, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : method === "nativeClose" ? { burned: true } : { providers: [] } }) });
+	const env = await setup({}, { lazy: true, layout, workspace: { uiWorkspace, sessions, layout }, workspaces: defaultWorkspace(byId), rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : method === "nativeClose" ? { burned: true } : { providers: [] } }) });
 	env.render(env.registrations.get("conversation.header.leading")).props.onClick(); await tick();
 	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen"]);
 	assert.ok(env.styles.some(css => css.includes('[data-conversation-session="owned"] [data-composer-card]') && css.includes('[data-conversation-session="owned"] [data-message-bubble]') && css.includes('dashed')));
@@ -104,10 +107,14 @@ test("source-free entry uses native RPC and closes only its owned session", asyn
 	assert.ok(heroClose.children.includes("临时聊天"));
 	assert.equal(heroClose.children[0].props.active, true, "active badge shows a check mark");
 	heroClose.props.onClick(); await tick();
-	assert.deepEqual(calls, [], "ending never navigates back or archives a previous window");
+	assert.deepEqual(calls, ["owned"], "only the owned native view is archived; no previous window is touched");
 	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"]);
 	env.cleanup();
 });
+
+function defaultWorkspace(byId) {
+	return { list: { getSnapshot: () => ({ phase: "ready", items: [{ workspaceId: "workspace-one", path: "/native/project", createdAt: "2026-01-01T00:00:00Z", sessionIds: Object.keys(byId) }] }) } };
+}
 
 function nativeFixture() {
 	const listeners = new Set(), byId = {}, navigation = [], panelListeners = new Set();
@@ -117,8 +124,39 @@ function nativeFixture() {
 	const sessions = { list: { getSnapshot: () => ({ byId }), subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } }, retainInfo: id => ({ getSnapshot: () => byId[id] || { retainedBy: {} }, subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); } }), retain: () => ({ release() {} }) };
 	const layout = { panelInfo: { getSnapshot: () => ({ activePanelId: panel }), subscribe: fn => { panelListeners.add(fn); return () => panelListeners.delete(fn); } }, beginNavigation: () => new AbortController().signal, selectPanel(id) { panel = id; for (const fn of [...panelListeners]) fn(); } };
 	const uiWorkspace = { openSession(id) { navigation.push(["open", id]); select(id); }, async archiveSession(id) { navigation.push(["archive", id]); if (byId[id]?.retainedBy.mainView) select(null); } };
-	return { sessions, layout, uiWorkspace, byId, select, navigation };
+	return { sessions, layout, uiWorkspace, byId, select, navigation, workspaces: defaultWorkspace(byId) };
 }
+
+test("native opening on a desktop blank view inherits its existing default workspace without creating one", async () => {
+	const f = nativeFixture(); let creates = 0;
+	f.workspaces.create = () => { creates++; throw Error("must not create/adopt a workspace"); };
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned", workspaceId: "workspace-one", cwd: "/native/project" } : { burned: true } }) });
+	env.render(env.registrations.get("conversation.header.leading")).props.onClick(); await tick(); await tick();
+	assert.deepEqual(JSON.parse(JSON.stringify(env.calls[0]?.[2])), { workspaceId: "workspace-one" });
+	assert.equal(creates, 0); assert.deepEqual(f.navigation, [["open", "owned"]]); env.cleanup();
+});
+
+test("web without a selected or default workspace does not create a btw workspace or Session", async () => {
+	const f = nativeFixture();
+	const workspaces = { list: { getSnapshot: () => ({ phase: "ready", items: [] }) }, create() { assert.fail("do not create a fallback workspace"); } };
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces });
+	env.render(env.registrations.get("conversation.header.leading")).props.onClick(); await tick();
+	assert.equal(env.calls.length, 0); assert.deepEqual(f.navigation, []);
+	assert.match(JSON.stringify(env.render(env.registrations.get("btw"))), /选择工作区/); env.cleanup();
+});
+
+test("desktop blank workspace selection follows the native recent-workspace rule and stable ties", async () => {
+	const f = nativeFixture();
+	f.byId.older = { updatedAt: 100, retainedBy: {} }; f.byId.recent = { updatedAt: 500, retainedBy: {} };
+	const workspaces = { list: { getSnapshot: () => ({ phase: "ready", items: [
+		{ workspaceId: "old", sessionIds: ["older"], createdAt: "2026-01-01T00:00:00Z" },
+		{ workspaceId: "recent", sessionIds: ["recent"], createdAt: "2026-01-01T00:00:00Z" },
+		{ workspaceId: "tie", sessionIds: ["recent"], createdAt: "2026-01-01T00:00:00Z" },
+	] }) } };
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
+	env.render(env.registrations.get("conversation.header.leading")).props.onClick(); await tick();
+	assert.deepEqual(JSON.parse(JSON.stringify(env.calls[0]?.[2])), { workspaceId: "recent" }); env.cleanup();
+});
 
 test("native open inherits the selected Session's workspace without sending its history", async () => {
 	const f = nativeFixture(); f.select("source");
@@ -128,7 +166,7 @@ test("native open inherits the selected Session's workspace without sending its 
 	assert.deepEqual(JSON.parse(JSON.stringify(env.calls[0][2])), { workspaceId: "workspace-one" });
 	assert.deepEqual(f.navigation, [["open", "owned"]]);
 	env.render(env.registrations.get("btw-temp"), { sessionId: "owned" }).props.onClick(); await tick();
-	assert.deepEqual(f.navigation, [["open", "owned"]], "ending leaves the user where they are"); env.cleanup();
+	assert.deepEqual(f.navigation, [["open", "owned"], ["archive", "owned"]], "ending clears only the owned native view without restoring the source"); env.cleanup();
 });
 
 test("native open is single-flight and a late result cannot override user navigation", async () => {
@@ -139,6 +177,117 @@ test("native open is single-flight and a late result cannot override user naviga
 	f.select("other"); pending.resolve({ ok: true, value: { sessionId: "owned" } }); await tick();
 	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"]);
 	assert.deepEqual(f.navigation, []); assert.equal(f.byId.other.retainedBy.mainView, 1); env.cleanup();
+});
+
+test("a second click while opening cancels and the late id burns exactly once", async () => {
+	const f = nativeFixture(), pending = deferred();
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => method === "nativeOpen" ? pending.promise : { ok: true, value: { burned: true } } });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick();
+	const opening = env.render(entry);
+	assert.ok(opening.children.includes("开启中…"), "opening gives immediate feedback");
+	assert.equal(opening.props.disabled, undefined, "the entry stays clickable to cancel");
+	opening.props.onClick(); await tick();
+	assert.match(env.render(entry).props.title, /已请求取消/);
+	pending.resolve({ ok: true, value: { sessionId: "owned" } }); await tick(); await tick(); await tick();
+	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"], "the cancelled late id is burned exactly once");
+	assert.deepEqual(f.navigation, []);
+	assert.equal(env.render(env.registrations.get("btw")), null, "a cancelled open leaves no error surface");
+	env.render(entry).props.onClick(); await tick(); await tick();
+	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose", "nativeOpen"], "opening works again after a cancelled open");
+	assert.equal(env.render(entry).props["aria-label"], "结束临时聊天");
+	env.cleanup();
+});
+
+test("closing shows feedback immediately and overlapping close signals burn once", async () => {
+	const f = nativeFixture(), burn = deferred(); let closes = 0;
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => method === "nativeOpen" ? { ok: true, value: { sessionId: "owned" } } : (++closes, burn.promise) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick(); await tick();
+	env.render(entry).props.onClick(); await tick();
+	const closing = env.render(entry);
+	assert.equal(closing.props["aria-label"], "清理后开启临时聊天");
+	assert.equal(closing.props.disabled, undefined, "a new opening intent remains actionable while cleanup is pending");
+	assert.match(closing.props.title, /正在结束/);
+	f.select("other"); await tick();
+	env.cleanup();
+	burn.resolve({ ok: true, value: { burned: true } }); await tick(); await tick();
+	assert.equal(closes, 1, "navigation, retry and unload closes dedupe to one burn");
+	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"]);
+	assert.equal(f.byId.other.retainedBy.mainView, 1);
+});
+
+test("an opening requested during close runs once after confirmed cleanup and preserves native workspace selection", async () => {
+	const f = nativeFixture(), burn = deferred(); let opens = 0, closes = 0;
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => method === "nativeOpen" ? { ok: true, value: { sessionId: "owned-" + ++opens } } : (++closes, burn.promise) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick(); await tick();
+	env.render(entry).props.onClick(); await tick();
+	assert.deepEqual(f.navigation, [["open", "owned-1"], ["archive", "owned-1"]], "the public host UI closes only the owned native view before disk cleanup completes");
+	env.render(entry).props.onClick(); await tick();
+	assert.match(env.render(entry).props.title, /清理完成后将开启/);
+	assert.equal(opens, 1, "do not overlap native sessions while the old burn is pending");
+	burn.resolve({ ok: true, value: { burned: true } }); await tick(); await tick(); await tick();
+	assert.equal(opens, 2); assert.equal(closes, 1);
+	assert.deepEqual(f.navigation, [["open", "owned-1"], ["archive", "owned-1"], ["open", "owned-2"]]);
+	assert.equal(env.render(entry).props["aria-label"], "结束临时聊天"); env.cleanup();
+});
+
+test("a queued reopening can be canceled and never overrides newer native navigation", async () => {
+	for (const next of ["cancel", "session", "panel"]) {
+		const f = nativeFixture(), burn = deferred(); let opens = 0;
+		const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => method === "nativeOpen" ? (++opens, { ok: true, value: { sessionId: "owned" } }) : burn.promise });
+		const entry = env.registrations.get("conversation.header.leading");
+		env.render(entry).props.onClick(); await tick();
+		env.render(entry).props.onClick(); await tick();
+		env.render(entry).props.onClick();
+		if (next === "cancel") env.render(entry).props.onClick();
+		else if (next === "session") f.select("other");
+		else f.layout.selectPanel("settings");
+		burn.resolve({ ok: true, value: { burned: true } }); await tick(); await tick();
+		assert.equal(opens, 1, next + " supersedes the queued opening");
+		if (next === "session") assert.equal(f.byId.other.retainedBy.mainView, 1);
+		if (next === "panel") assert.equal(f.layout.panelInfo.getSnapshot().activePanelId, "settings");
+		env.cleanup();
+	}
+});
+
+test("failure to dismiss a native view does not skip the owned burn or falsely claim UI success", async () => {
+	const f = nativeFixture();
+	f.uiWorkspace.archiveSession = () => Promise.reject(new Error("native navigation failed"));
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick();
+	env.render(entry).props.onClick(); await tick(); await tick();
+	assert.deepEqual(env.calls.map(call => call[1]), ["nativeOpen", "nativeClose"]);
+	assert.match(JSON.stringify(env.render(env.registrations.get("btw"))), /临时记录已清理.*退出失败/);
+	assert.equal(env.render(entry).props["aria-label"], "开启全局临时聊天"); env.cleanup();
+});
+
+test("a third click during opening restores the latest intent without another host creation", async () => {
+	const f = nativeFixture(), pending = deferred();
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => method === "nativeOpen" ? pending.promise : { ok: true, value: { burned: true } } });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); env.render(entry).props.onClick(); env.render(entry).props.onClick();
+	pending.resolve({ ok: true, value: { sessionId: "owned" } }); await tick(); await tick();
+	assert.deepEqual(env.calls.map(call => call[1]), ["nativeOpen"]);
+	assert.deepEqual(f.navigation, [["open", "owned"]]); env.cleanup();
+});
+
+test("a rejected burn keeps the session endable and retryable from the entry", async () => {
+	const f = nativeFixture(); let burns = 0;
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => method === "nativeOpen" ? { ok: true, value: { sessionId: "owned" } } : ++burns === 1 ? { ok: true, value: {} } : { ok: true, value: { burned: true } } });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick(); await tick();
+	env.render(entry).props.onClick(); await tick(); await tick();
+	const endable = env.render(entry);
+	assert.equal(endable.props["aria-label"], "结束临时聊天", "the still-alive session stays endable");
+	assert.match(JSON.stringify(env.render(env.registrations.get("btw"))), /未确认安全清理/, "the failure stays visible");
+	endable.props.onClick(); await tick(); await tick();
+	assert.equal(burns, 2);
+	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose", "nativeClose"]);
+	assert.equal(env.render(entry).props["aria-label"], "开启全局临时聊天", "idle again only after burned:true");
+	env.cleanup();
 });
 
 test("native navigation away closes without restoring and failed close can retry", async () => {
@@ -168,7 +317,7 @@ test("native selection survives catalog lag and remains usable until explicit cl
 	const button = env.render(env.registrations.get("btw-temp"), { sessionId: "owned" });
 	assert.equal(button.props["aria-label"], "结束临时聊天");
 	button.props.onClick(); await tick();
-	assert.deepEqual(f.navigation, [["open", "owned"]], "no archive and no restore on close");
+	assert.deepEqual(f.navigation, [["open", "owned"], ["archive", "owned"]], "the native view exits even while the catalog lags; the source is not restored");
 	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"]); env.cleanup();
 });
 
@@ -190,10 +339,10 @@ test("ending the native chat releases the prior reference without navigating bac
 	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
 	env.render(env.registrations.get("conversation.header.leading")).props.onClick(); await tick();
 	const button = env.render(env.registrations.get("btw-temp"), { sessionId: "owned" }); button.props.onClick(); button.props.onClick(); await tick();
-	assert.deepEqual(f.navigation, [["open", "owned"]], "the previous window is not reopened");
+	assert.deepEqual(f.navigation, [["open", "owned"], ["archive", "owned"]], "the previous window is not reopened or archived");
 	assert.equal(released, 1);
 	const rpc = env.calls.map(([channel, method, payload]) => [channel, method, JSON.stringify(payload)]);
-	assert.deepEqual(rpc, [["/btw", "nativeOpen", "{}"], ["/btw", "nativeClose", '{"sessionId":"owned"}']]); env.cleanup();
+	assert.deepEqual(rpc, [["/btw", "nativeOpen", '{"workspaceId":"workspace-one"}'], ["/btw", "nativeClose", '{"sessionId":"owned"}']]); env.cleanup();
 });
 
 test("native pending open after unload closes on its pinned connection without navigation", async () => {
@@ -225,64 +374,52 @@ test("native close rejects missing burn confirmation and retries without affecti
 
 function adoptFixture() {
 	const f = nativeFixture(); f.select("source");
-	return { f, workspaces: (create) => ({ list: { getSnapshot: () => ({ phase: "ready", items: [] }) }, create }) };
+	return { f, workspaces: create => ({ ...f.workspaces, create }) };
 }
 
-// The workspace adoption window sits between nativeOpen and the first user-
-// visible surface: the host session already exists there, so the client must
-// already own it — every path out of that window ends it through the burned gate.
-test("native workspace adoption succeeds, opens and stays fully endable", async () => {
-	const { f, workspaces } = adoptFixture(); const adopted = [];
-	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces: workspaces((arg) => { adopted.push(arg); return Promise.resolve(); }), rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned", cwd: "/w/owned" } : { burned: true } }) });
-	env.render(env.registrations.get("conversation.header.leading")).props.onClick(); await tick(); await tick();
-	assert.deepEqual(JSON.parse(JSON.stringify(adopted)), [{ path: "/w/owned" }]);
-	assert.deepEqual(f.navigation, [["open", "owned"]]);
-	assert.ok(env.styles.some(css => css.includes('[data-conversation-session="owned"] [data-composer-card]')));
-	const button = env.render(env.registrations.get("btw-temp"), { sessionId: "owned" });
-	assert.equal(button.props["aria-label"], "结束临时聊天");
-	button.props.onClick(); await tick(); await tick();
-	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"]);
-	assert.deepEqual(f.navigation, [["open", "owned"]], "no archive and no restore on close"); env.cleanup();
+test("active desktop workspace wins over a more recently updated unrelated project", async () => {
+	const f = nativeFixture(); f.select("source");
+	f.byId.source.updatedAt = 100; f.byId.recent = { updatedAt: 1000, retainedBy: {} };
+	const workspaces = { list: { getSnapshot: () => ({ phase: "ready", items: [
+		{ workspaceId: "recent", sessionIds: ["recent"], createdAt: "2026-01-01T00:00:00Z" },
+		{ workspaceId: "current", sessionIds: ["source"], createdAt: "2026-01-01T00:00:00Z" },
+	] }) }, create() { assert.fail("existing workspace needs no create"); } };
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
+	env.render(env.registrations.get("conversation.header.leading")).props.onClick(); await tick();
+	assert.deepEqual(JSON.parse(JSON.stringify(env.calls[0][2])), { workspaceId: "current" }); env.cleanup();
 });
 
-test("failed workspace adoption keeps the session owned: burned-confirmed close, retryable, never fire-and-forget", async () => {
-	const { f, workspaces } = adoptFixture(); let burns = 0;
-	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces: workspaces(() => Promise.reject(new Error("工作区登记失败"))), rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned", cwd: "/w/owned" } : method === "nativeClose" ? (++burns === 1 ? {} : { burned: true }) : { providers: [] } }) });
+test("pending workspace discovery never opens a temporary Session against stale cached choices", async () => {
+	const f = nativeFixture(), snapshot = { ...f.workspaces.list.getSnapshot(), phase: "pending" };
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces: { list: { getSnapshot: () => snapshot } } });
+	env.render(env.registrations.get("conversation.header.leading")).props.onClick(); await tick();
+	assert.deepEqual(env.calls, []); assert.match(JSON.stringify(env.render(env.registrations.get("btw"))), /工作区尚未就绪/); env.cleanup();
+});
+
+test("catalog refresh failure keeps ownership and a burned-confirmed retry instead of swallowing cleanup", async () => {
+	const f = nativeFixture(); let burns = 0;
+	f.sessions.refresh = () => Promise.reject(new Error("目录刷新失败"));
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : ++burns === 1 ? {} : { burned: true } }) });
 	env.render(env.registrations.get("conversation.header.leading")).props.onClick(); await tick(); await tick();
-	// The first close reply lacks burned:true: the client must surface it instead of
-	// swallowing the outcome, and must keep the end control for a retry.
-	assert.equal(burns, 1);
 	const status = env.render(env.registrations.get("btw"));
-	assert.match(JSON.stringify(status), /工作区登记失败/);
-	assert.match(JSON.stringify(status), /重试结束/, "a live adopted session stays endable after a failed adoption");
+	assert.equal(burns, 1); assert.match(JSON.stringify(status), /目录刷新失败/);
+	assert.match(JSON.stringify(status), /重试结束/);
 	all(status, n => n.type === "button")[0].props.onClick(); await tick(); await tick();
-	assert.equal(burns, 2, "retry closes the leaked session");
-	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose", "nativeClose"]);
-	assert.deepEqual(f.navigation, [], "the failed adoption never opened a surface");
-	assert.equal(env.render(env.registrations.get("btw")), null, "success clears the error surface"); env.cleanup();
+	assert.equal(burns, 2); assert.deepEqual(f.navigation, []);
+	assert.equal(env.render(env.registrations.get("btw")), null); env.cleanup();
 });
 
-test("unload during the workspace adoption window closes the live session without waiting for the adopt", async () => {
-	const { f, workspaces } = adoptFixture(); const adopt = deferred(); let released = 0;
-	f.sessions.retain = (id, options) => { assert.equal(id, "source"); assert.equal(options.source, "controllerOperation"); return { release: () => released++ }; };
-	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces: workspaces(() => adopt.promise), rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned", cwd: "/w/owned" } : { burned: true } }) });
+test("unload during catalog refresh closes the live Session immediately and fences its late result", async () => {
+	const f = nativeFixture(), refresh = deferred(); let released = 0;
+	f.select("source");
+	f.sessions.refresh = () => refresh.promise;
+	f.sessions.retain = () => ({ release: () => released++ });
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
 	env.render(env.registrations.get("conversation.header.leading")).props.onClick(); await tick();
 	env.cleanup(); await tick(); await tick();
-	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"], "unload must burn the session even while adoption is pending");
-	assert.equal(released, 1);
-	adopt.resolve(); await tick(); await tick();
-	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"], "the late adopt result closes exactly once");
-	assert.deepEqual(f.navigation, []);
-});
-
-test("navigating away during the workspace adoption window burns the late session without opening it", async () => {
-	const { f, workspaces } = adoptFixture(); const adopt = deferred();
-	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces: workspaces(() => adopt.promise), rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned", cwd: "/w/owned" } : { burned: true } }) });
-	env.render(env.registrations.get("conversation.header.leading")).props.onClick(); await tick();
-	f.select("other"); adopt.resolve(); await tick(); await tick();
-	assert.deepEqual(f.navigation, [], "a late adopt never opens the surface");
-	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"]);
-	assert.equal(f.byId.other.retainedBy.mainView, 1, "the user's navigation wins"); env.cleanup();
+	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"]); assert.equal(released, 1);
+	refresh.resolve(); await tick(); await tick();
+	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"]); assert.deepEqual(f.navigation, []);
 });
 
 test("late native open skips workspace adoption after the user switches sessions", async () => {

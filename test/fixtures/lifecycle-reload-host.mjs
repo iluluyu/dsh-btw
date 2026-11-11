@@ -1,9 +1,35 @@
 // Isolated smoke-only endpoint. Never installed in the user's profile or npm files.
 import assert from 'node:assert/strict';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 export const inject = ['loader', 'connection', 'webServer'];
 export function apply(ctx) {
 	const connection = ctx.extend({ webServer: ctx.webServer }).connection;
+	async function withWorkspaces(operation) {
+		let scope;
+		try {
+			return await new Promise((resolve, reject) => {
+				scope = ctx.inject(['workspaceRegistry'], ready => {
+					Promise.resolve().then(() => operation(ready.workspaceRegistry)).then(resolve, reject);
+				});
+				scope.await().catch(reject);
+			});
+		} finally { await scope?.dispose(); }
+	}
 	ctx.effect(() => connection.rpc.handle('/btw-smoke-lifecycle', async method => {
+		if (method === 'project') {
+			const path = join(process.env.DSH_HOME, 'selected-project');
+			await mkdir(path, { recursive: true });
+			await writeFile(join(path, 'user-sentinel'), 'keep');
+			return { ok: true, value: await withWorkspaces(async registry => {
+				const workspace = await registry.create(path, 'selected project');
+				return { workspaceId: workspace.id, cwd: workspace.path };
+			}) };
+		}
+		if (method === 'archives') return { ok: true, value: await withWorkspaces(registry => [...registry.archivedSessionIds]) };
+		if (method === 'workspaces') return { ok: true, value: await withWorkspaces(registry => registry.list().map(workspace => ({
+			workspaceId: workspace.id, title: workspace.title, path: workspace.path, sessionIds: workspace.sessionIds,
+		}))) };
 		assert.equal(method, 'restart');
 		const entries = [...ctx.loader.entries()];
 		const entry = entries.find(entry => entry.options.id === 'btw');

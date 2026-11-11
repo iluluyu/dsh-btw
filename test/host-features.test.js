@@ -193,11 +193,16 @@ async function fixtureNative(options = {}) {
 		setGlobal: async () => {}, close: async () => {},
 	}) }, close: async () => { delegateClosed = true; } };
 	const gate = new NativeCacheBackend(delegate, markers);
-	const unit = await gate.kv.open(nativeDescriptor);
+	const readBinding = gate.bind.bind(gate);
+	gate.bind = (...args) => {
+		if (options.bindingPending) throw Error("原生临时聊天不可用: 宿主缓存正在初始化");
+		return readBinding(...args);
+	};
+	let unit = await gate.kv.open(nativeDescriptor);
 	await unit.loadAll();
 	const domain = { table: name => { assert.equal(name, "sessions"); return { get: id => records.get(id) }; } };
 	let currentDomain = domain;
-	const storageDomain = { get: name => name === "session_projcache" ? currentDomain : undefined };
+	const storageDomain = { config: { backend: "json", routes: { session_projcache: BACKEND } }, get: name => name === "session_projcache" ? currentDomain : undefined };
 	const persistence = new JsonlSessionPersistence();
 	const sessions = { get: id => live.get(id)?.session };
 	const registryCalls = [];
@@ -276,6 +281,12 @@ async function fixtureNative(options = {}) {
 	const h = host({ tempModelMode: "custom", tempProvider: "ignored", tempModel: "ignored" }, services);
 	return { h, markers, gate, unit, calls, records, mounts, selections, createOptions, order, workspaceRegistry, registryCalls, id: () => id,
 		unroute: () => { currentDomain = { table: domain.table }; },
+		async reopenCache() {
+			await unit.close();
+			unit = await gate.kv.open(nativeDescriptor); await unit.loadAll();
+			currentDomain = { table: domain.table };
+			await h.rebind({ sessionProjectionCache: {} });
+		},
 		delegateClosed: () => delegateClosed,
 		finish: async () => { await h.cleanup(); await gate.close(); await fs.rm(markers.root, { recursive: true, force: true }); },
 	};
@@ -298,6 +309,31 @@ test("nativeOpen requires explicit active route; unknown/foreign IDs are never f
 		assert.equal(f.createOptions.length, 0);
 		await f.finish();
 	}
+});
+
+test("transient native capability initialization is retryable without a service reload or duplicated error prefix", async () => {
+	const options = { bindingPending: true }, f = await fixtureNative(options);
+	const first = await f.h.call("nativeOpen", {});
+	assert.equal(first.ok, false); assert.match(first.error.message, /宿主缓存正在初始化/);
+	assert.equal(first.error.message.split("原生临时聊天不可用:").length - 1, 1);
+	assert.equal(f.createOptions.length, 0);
+	options.bindingPending = false;
+	const second = await f.h.call("nativeOpen", {});
+	assert.equal(second.ok, true, JSON.stringify(second));
+	assert.equal((await f.h.call("nativeClose", second.value)).ok, true);
+	await f.finish();
+});
+
+test("native capability and cached cleanup adapters rebind after a supported cache service reopen", async () => {
+	const f = await fixtureNative();
+	const first = await f.h.call("nativeOpen", {});
+	assert.equal(first.ok, true, JSON.stringify(first));
+	assert.equal((await f.h.call("nativeClose", first.value)).ok, true);
+	await f.reopenCache();
+	const second = await f.h.call("nativeOpen", {});
+	assert.equal(second.ok, true, JSON.stringify(second));
+	assert.equal((await f.h.call("nativeClose", second.value)).ok, true);
+	await f.finish();
 });
 
 test("native root uses ordinary default preset/model, rejects source payloads and retains permanent deny markers", async () => {

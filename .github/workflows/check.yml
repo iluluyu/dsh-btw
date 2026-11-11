@@ -21,3 +21,17 @@ jobs:
       - run: npm install --ignore-scripts --no-audit --no-fund
       - run: npm run check
       - run: npm test
+
+  desktop-contracts:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - run: node --test test/native-workspace-identity.test.js test/native-cache-binding.test.js test/host-platform.test.js test/client-features.test.js

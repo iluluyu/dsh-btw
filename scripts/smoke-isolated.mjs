@@ -138,26 +138,46 @@ async function concurrentTemps(origin, cookie) {
 }
 
 async function nativeRoundTrip(origin, cookie) {
-	const opened = await rpc(origin, 'btw', 'nativeOpen', {}, cookie);
-	assert.match(opened.sessionId, /^[0-9a-f-]{36}$/i);
-	const id = opened.sessionId;
-	const ownedWorkspace = join(env.DSH_HOME, '.btw-native-workspaces', '_no-cwd', id);
-	assert.equal(opened.cwd, ownedWorkspace);
-	assert.equal((await lstat(ownedWorkspace)).isDirectory(), true);
-	assert.ok((await sessionArtifacts(id)).files > 0);
-	for (const records of ['.btw-native-records', '.btw-native-workspace-records']) {
-		assert.ok(await readFile(join(env.DSH_HOME, records, `${id}.json`), 'utf8'));
+	// Exercise an existing native project, including empty chats: no message or
+	// model call is needed to expose open/close and workspace ownership bugs.
+	const project = await rpc(origin, 'btw-smoke-lifecycle', 'project', {}, cookie);
+	for (let turn = 0; turn < 8; turn++) {
+		const opened = await rpc(origin, 'btw', 'nativeOpen', { workspaceId: project.workspaceId }, cookie);
+		assert.match(opened.sessionId, /^[0-9a-f-]{36}$/i);
+		const id = opened.sessionId;
+		assert.equal(opened.cwd, project.cwd);
+		assert.equal(opened.workspaceId, project.workspaceId);
+		assert.ok((await sessionArtifacts(id)).files > 0);
+		const registered = await rpc(origin, 'btw-smoke-lifecycle', 'workspaces', {}, cookie);
+		assert.equal(registered.length, 1, 'opening a temporary chat must not create a btw workspace');
+		assert.deepEqual(registered[0].sessionIds, [id]);
+		if (turn < 7) {
+			// The native client dismisses only its own view through the public
+			// archive command; the subsequent owned burn also removes that flag.
+			await rpc(origin, 'api', 'workspace/archiveSession', { args: { request: { sessionId: id, stopActivity: true } } }, cookie);
+		}
+		if (turn === 7) {
+			// A real plugin reload forgets the in-memory receipt, but must finish
+			// its owned cleanup while preserving the user's original workspace.
+			assert.equal((await rpc(origin, 'btw-smoke-lifecycle', 'restart', {}, cookie)).restarted, true);
+		}
+		const closes = await Promise.all([
+			rpc(origin, 'btw', 'nativeClose', { sessionId: id }, cookie),
+			rpc(origin, 'btw', 'nativeClose', { sessionId: id }, cookie),
+		]);
+		assert.ok(closes.every(value => value.burned === true));
+		assert.deepEqual((await sessionArtifacts(id)).matches, []);
+		for (const records of ['.btw-native-records', '.btw-native-workspace-records']) {
+			assert.equal((await readdir(join(env.DSH_HOME, records))).some(name => name.startsWith(id)), false);
+		}
+		const remaining = await rpc(origin, 'btw-smoke-lifecycle', 'workspaces', {}, cookie);
+		assert.equal(remaining.length, 1);
+		assert.equal(remaining[0].workspaceId, project.workspaceId);
+		assert.deepEqual(remaining[0].sessionIds, []);
+		assert.deepEqual(await rpc(origin, 'btw-smoke-lifecycle', 'archives', {}, cookie), [], 'owned native UI archive flags are removed by cleanup');
+		assert.equal(await readFile(join(project.cwd, 'user-sentinel'), 'utf8'), 'keep');
+		assert.ok(await readFile(join(env.DSH_HOME, '.btw-native-deny', `${id}.json`), 'utf8'));
 	}
-	// A real plugin reload disposes the owner and loses its in-memory close receipt.
-	assert.equal((await rpc(origin, 'btw-smoke-lifecycle', 'restart', {}, cookie)).restarted, true);
-	assert.equal((await rpc(origin, 'btw', 'nativeClose', { sessionId: id }, cookie)).burned, true);
-	assert.equal((await rpc(origin, 'btw', 'nativeClose', { sessionId: id }, cookie)).burned, true);
-	assert.deepEqual((await sessionArtifacts(id)).matches, []);
-	await assert.rejects(lstat(ownedWorkspace), { code: 'ENOENT' });
-	for (const records of ['.btw-native-records', '.btw-native-workspace-records']) {
-		assert.equal((await readdir(join(env.DSH_HOME, records))).some(name => name.startsWith(id)), false);
-	}
-	assert.ok(await readFile(join(env.DSH_HOME, '.btw-native-deny', `${id}.json`), 'utf8'), 'permanent deny marker remains');
 }
 
 async function tempRoundTrip(origin, cookie, payload, noWorkspace) {
@@ -271,7 +291,7 @@ try {
 	await concurrentTemps(url.origin, cookie);
 	console.log('ok: concurrent temporary chats own independent records and close independently');
 	await nativeRoundTrip(url.origin, cookie);
-	console.log('ok: real native root survives plugin-reload close acknowledgement; owned JSONL/workspace/records removed, deny marker retained');
+	console.log('ok: 8 empty native chats inherit the selected workspace; concurrent close and plugin reload preserve the user workspace without adding btw groups');
 	assert.doesNotMatch(output, activationFailure, 'activation error in log');
 } catch (error) {
 	failed = true;

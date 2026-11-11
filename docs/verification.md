@@ -1,5 +1,16 @@
 # 本地验证记录
 
+## 本轮：桌面优先的原生临时聊天边界
+
+- 复现并修复大于 2^53 的目录 inode 在 BigInt/Number 间丢精度，导致空会话关闭误报目录替换；同步修复 sidecar 身份精度。3 项回归覆盖正常关闭、真实目录替换拒删、stat→unlink 间替换拒删。
+- 客户端按宿主 New Session 的公开 projection 规则继承当前/最近已有 workspace；新增桌面空白/default/recent/稳定排序、当前项目优先、pending discovery、Web 无 workspace 的测试。移除原生入口的无条件 create/adopt，不再由新 UI 请求独占 btw 分组。
+- 明确 idle/opening/active/closing；开启中可以取消/恢复，关闭中可预约/取消重开，重开受原连接和后续导航隔离。显式结束当前本人视图走公开 uiWorkspace.archiveSession；实际 burn 独立执行并清理本人 archive 标记，不归档来源、不把归档当删除。
+- cache 能力证据改成当前 facility 路由/domain/cache/活跃 unit，而非 backend 全局只许一个 unit；支持多个受保护 scope，拒绝借其他 unit 授权 foreign route。首次 bind 失败可重试，成功后仍 pin domain 并由 scope 重建恢复。新增初始化暂时失败/重复错误前缀、真实服务 reopen 回归。
+- 全量 271 项运行中，270 项通过；新 reopen 回归的唯一失败是测试夹具仍引用旧关闭 unit，修正夹具后重跑全部 host 63 项均通过，其余 208 项已在同一实现上通过。`npm run check`、`git diff --check` 通过。
+- 隔离安装版 Linux dsh 0.2.2-rc.1 连续 8 次未发送的原生会话：已有项目继承、公开 archive 退出、并发 close、实际插件 restart；无新 btw 分组，用户 workspace/哨兵不变，本人 JSONL/恢复记录/archive 标记移除，永久 deny marker 保留。脚本已通过并清掉所属进程与临时目录，无供应商请求。
+- `.github/workflows/check.yml` 新增 Windows/macOS 的 filesystem/client contracts，结果以对应验证分支 workflow run 为准，未成功前不声称通过；这些是实际 OS 的契约测试，也不等同桌面应用 GUI 真机验收。本轮没有 Windows/macOS 桌面真机，不把 Web smoke 作为桌面通过证据。未 bump、未发布、未改用户 profile。
+- 公开 SDK 能力与版本绑定私有读取边界见 [原生临时聊天架构复核](native-temp-architecture-review.md)。
+
 ## 本轮：workspace 关闭、临时聊天退出与切换
 
 - 修复原生临时聊天清理回调长期保存首次 workspace/domain/sessions 实例的问题。可选服务重建后按次解析当前 gate；开启期间代次变化会取消本次创建并清理本人预留资源。

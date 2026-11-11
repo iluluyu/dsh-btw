@@ -1,9 +1,9 @@
 # One Loader source: btw mounts its backend through the public child plugin API.
-# rc.1 patches replace whole config, with NO routes deep-merge. DO NOT overwrite
-# storage-domain.backend or unknown user routes. Explicit startup opt-in:
-# preserve the COMPLETE existing storage-domain config, add only
-# routes.session_projcache: btw-native-json, then restart. See lib/native-cache.js.
-# Without that route nativeOpen returns a clear error; legacy APIs still work.
+# rc.1 patches replace whole config, with NO routes deep-merge. index.js merges
+# the protected cache route through the Loader's in-memory entry API instead;
+# it preserves storage-domain.backend and unrelated/explicit user routes.
+# The bundle must not overwrite user storage config. Unsupported configurations
+# keep nativeOpen fail-closed; legacy ask/open APIs remain independent.
 - insert:
     - id: btw
       name: 'dsh-btw'
