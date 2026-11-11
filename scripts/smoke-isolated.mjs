@@ -137,6 +137,29 @@ async function concurrentTemps(origin, cookie) {
 	}
 }
 
+async function nativeRoundTrip(origin, cookie) {
+	const opened = await rpc(origin, 'btw', 'nativeOpen', {}, cookie);
+	assert.match(opened.sessionId, /^[0-9a-f-]{36}$/i);
+	const id = opened.sessionId;
+	const ownedWorkspace = join(env.DSH_HOME, '.btw-native-workspaces', '_no-cwd', id);
+	assert.equal(opened.cwd, ownedWorkspace);
+	assert.equal((await lstat(ownedWorkspace)).isDirectory(), true);
+	assert.ok((await sessionArtifacts(id)).files > 0);
+	for (const records of ['.btw-native-records', '.btw-native-workspace-records']) {
+		assert.ok(await readFile(join(env.DSH_HOME, records, `${id}.json`), 'utf8'));
+	}
+	// A real plugin reload disposes the owner and loses its in-memory close receipt.
+	assert.equal((await rpc(origin, 'btw-smoke-lifecycle', 'restart', {}, cookie)).restarted, true);
+	assert.equal((await rpc(origin, 'btw', 'nativeClose', { sessionId: id }, cookie)).burned, true);
+	assert.equal((await rpc(origin, 'btw', 'nativeClose', { sessionId: id }, cookie)).burned, true);
+	assert.deepEqual((await sessionArtifacts(id)).matches, []);
+	await assert.rejects(lstat(ownedWorkspace), { code: 'ENOENT' });
+	for (const records of ['.btw-native-records', '.btw-native-workspace-records']) {
+		assert.equal((await readdir(join(env.DSH_HOME, records))).some(name => name.startsWith(id)), false);
+	}
+	assert.ok(await readFile(join(env.DSH_HOME, '.btw-native-deny', `${id}.json`), 'utf8'), 'permanent deny marker remains');
+}
+
 async function tempRoundTrip(origin, cookie, payload, noWorkspace) {
 	const opened = await rpc(origin, 'btw', 'open', payload, cookie);
 	// Do not interpolate an untrusted id into a path or accept an ambiguous match.
@@ -203,7 +226,11 @@ try {
 	// Use a patch instead of pnpm: no registry access and the checkout is loaded directly.
 	const patch = join(root, 'btw.patch.yml');
 	const rel = relative(dirname(patch), plugin).replaceAll('\\', '/');
-	await writeFile(patch, `- insert:\n    - id: btw\n      name: ${JSON.stringify(rel.startsWith('.') ? rel : './' + rel)}\n`);
+	// Keep the probe outside dsh-btw's package root: client-modules permits only
+	// one active Loader source per client package.
+	const reloadProbe = join(root, 'lifecycle-reload-host.mjs');
+	await writeFile(reloadProbe, await readFile(new URL('../test/fixtures/lifecycle-reload-host.mjs', import.meta.url), 'utf8'));
+	await writeFile(patch, `- insert:\n    - id: btw\n      name: ${JSON.stringify(rel.startsWith('.') ? rel : './' + rel)}\n    - id: btw-smoke-lifecycle\n      name: ${JSON.stringify(reloadProbe)}\n`);
 	child = spawn(bin, ['--profile', 'web', '--patch', patch, '--host', '127.0.0.1', '--port', '0', '--no-open'], {
 		cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32',
 	});
@@ -243,6 +270,8 @@ try {
 	console.log('ok: no-workspace temp open/poll/close and physical/recovery-record cleanup');
 	await concurrentTemps(url.origin, cookie);
 	console.log('ok: concurrent temporary chats own independent records and close independently');
+	await nativeRoundTrip(url.origin, cookie);
+	console.log('ok: real native root survives plugin-reload close acknowledgement; owned JSONL/workspace/records removed, deny marker retained');
 	assert.doesNotMatch(output, activationFailure, 'activation error in log');
 } catch (error) {
 	failed = true;

@@ -1,5 +1,14 @@
 # 本地验证记录
 
+## 本轮：workspace 关闭、临时聊天退出与切换
+
+- 修复原生临时聊天清理回调长期保存首次 workspace/domain/sessions 实例的问题。可选服务重建后按次解析当前 gate；开启期间代次变化会取消本次创建并清理本人预留资源。
+- 父/子 scope 并发卸载时保留可选依赖直至共享关闭屏障完成；host scope 重载后允许凭永久标记和无残留证据确认既有清理回执，绝不删除陌生 ID，也不把待清理记录视为成功。
+- 客户端在工作区登记前即记录 host 会话所有权，登记失败与卸载统一走 burned 确认与可重试关闭；切换会话/连接后的迟到结果在登记工作区之前即被拦截，不打开或抢回页面。来源导航、连接和注入服务代次在多个异步边界使用同一 stale 检查。
+- 新增 6 项后端、6 项前端回归；关键失败场景先复现再修复。`npm run check` 与全量 251 项测试通过；最后追加两项切换回归并修复后，客户端/兼容/模块相关 146 项及客户端语法检查全部通过，`git diff --check` 通过。真实 `@deepseek-ai/cordis` 卸载覆盖在测试内。
+- 扩展 `node scripts/smoke-isolated.mjs`：在隔离 HOME/DSH_HOME 中使用安装版 dsh `0.2.2-rc.1`，验证普通临时聊天并发独立清理、原生 root 创建、整个插件真实 restart、随后重复 nativeClose 回执，以及 JSONL/workspace/records 全部消失、永久拒写标记保留。探针位于隔离目录，避免同一个 client package 注册多个 Loader source；restart 后通过真实依赖就绪屏障等待子 scope，而非固定延迟。脚本通过并清理全部所属进程/临时目录。
+- 未请求真实供应商模型、未重启用户现有服务、未改用户 profile、未 bump 或发布。未重做 Windows、跨进程共享 DSH_HOME 或 UI 像素验收；展示模式既有回归保持通过，未为未证实的问题改变交互语义。
+
 ## 本轮：项目内 btw 实时思考与工作区继承
 
 - 项目会话中的 btw 通过 opt-in 快照展示本人当前 attempt 的真实 reasoning delta；使用 DSH 公开 `DisclosureRow`、思考图标及 reasoning 正文 Factory，思考中展开、结束后自动折叠。重试替换实时快照，失败/取消清除，最终内容仍以成功提交的事件为准；不展示 signature，不向来源草稿插入思考。

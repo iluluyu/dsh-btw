@@ -8,6 +8,7 @@ import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
+import { Context } from "@deepseek-ai/cordis";
 import { BACKEND, DenyMarkers, NativeCacheBackend } from "../lib/native-cache.js";
 
 // Everything, including the rc.1 install anchor, lives under an isolated home.
@@ -48,15 +49,24 @@ function host(config = {}, overrides = {}) {
 		connection: { rpc: { handle(_path, fn) { call = fn; return () => {}; } } },
 		...overrides,
 	};
-	const injectedCleanup = [];
+	const injectedCleanup = [], injections = [];
+	const mount = (names, callback) => {
+		if (names.every(n => services[n] !== undefined)) callback({ ...services, effect(fn) { injectedCleanup.push(fn()); } });
+	};
 	apply({ ...services, logger: { warn: text => warnings.push(text) }, get: name => services[name], extend(p) { return { ...this, ...p }; }, effect(fn) { cleanup = fn(); },
 		inject(names, callback) {
-			if (names.every(n => services[n] !== undefined)) callback({ ...services, effect(fn) { injectedCleanup.push(fn()); } });
+			injections.push({ names, callback });
+			mount(names, callback);
 		},
 	}, config);
-	return { call: (...args) => call(...args), request: () => request, creations: () => creations, cleanup: async () => {
-		await cleanup(); for (const fn of injectedCleanup) await fn?.();
-	}, services, warnings };
+	return { call: (...args) => call(...args), request: () => request, creations: () => creations, cleanup: async (concurrent = false) => {
+		if (concurrent) await Promise.all([...injectedCleanup.map(fn => fn?.()), cleanup()]);
+		else { await cleanup(); for (const fn of injectedCleanup) await fn?.(); }
+	}, services, warnings, async rebind(patch) {
+		for (const fn of injectedCleanup.splice(0)) await fn?.();
+		Object.assign(services, patch);
+		for (const { names, callback } of injections) mount(names, callback);
+	} };
 }
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -258,7 +268,7 @@ async function fixtureNative(options = {}) {
 		} };
 	} };
 	const services = { agents, sessionPersistence: persistence, sessions, workspaceRegistry,
-		agentPresets: { resolve: async () => ({ id: "ordinary-default" }), mount: async (_ctx, preset) => mounts.push(preset) },
+		agentPresets: { resolve: async () => { options.presetStarted?.resolve(); await options.presetGate?.promise; return { id: "ordinary-default" }; }, mount: async (_ctx, preset) => mounts.push(preset) },
 		btwNativeCache: gate, storage: { backend: { get: name => { assert.equal(name, BACKEND); return gate; } } },
 		storageDomain, sessionProjectionCache: {},
 	};
@@ -355,6 +365,138 @@ test("native close waits for disposal then idle, failed close retains records an
 	idleGate.resolve();
 	assert.equal((await retry).ok, true);
 	await f.finish();
+});
+
+test("native cleanup resolves current services after workspace and Session store reloads", async () => {
+	const f = await fixtureNative();
+	const first = await f.h.call("nativeOpen", {});
+	assert.equal(first.ok, true, JSON.stringify(first));
+	const oldRegistry = f.h.services.workspaceRegistry, oldSessions = f.h.services.sessions;
+	const replacement = { ...oldRegistry }, sessions = { ...oldSessions };
+	for (const name of Object.keys(oldRegistry)) oldRegistry[name] = () => { throw Error("domain 'workspace' is closed"); };
+	await f.h.rebind({ workspaceRegistry: replacement, sessions });
+	// The cached storage adapter must also work for chats opened AFTER a reload.
+	const second = await f.h.call("nativeOpen", {});
+	assert.equal(second.ok, true, JSON.stringify(second));
+	for (const response of [first, second]) {
+		const id = response.value.sessionId;
+		nativeArchived.add(id); nativePinned.add(id);
+		const close = await f.h.call("nativeClose", { sessionId: id });
+		assert.equal(close.ok, true, JSON.stringify(close));
+		assert.equal(existsSync(nativeDir(id)), false);
+		assert.equal(existsSync(nativeWorkspace(id)), false);
+		assert.equal(replacement.get(response.value.workspaceId), undefined);
+		assert.equal(nativeArchived.has(id), false); assert.equal(nativePinned.has(id), false);
+		assert.equal(await f.markers.has(id), true);
+		// The first close exercises the exact closed workspace-domain error;
+		// the second additionally rejects a stale Session store reference.
+		oldSessions.get = () => { throw Error("old Session store is closed"); };
+	}
+	await f.finish();
+});
+
+test("native close retains ownership while dependencies reload and succeeds after rebind", async () => {
+	const f = await fixtureNative();
+	const response = await f.h.call("nativeOpen", {});
+	assert.equal(response.ok, true, JSON.stringify(response));
+	const id = response.value.sessionId, registry = f.h.services.workspaceRegistry;
+	await f.h.rebind({ workspaceRegistry: undefined });
+	const close = await f.h.call("nativeClose", { sessionId: id });
+	assert.equal(close.ok, false, "missing lifecycle witness must not permit destructive cleanup");
+	assert.equal(existsSync(join(root, ".btw-native-records", `${id}.json`)), true);
+	assert.equal(existsSync(nativeDir(id)), true);
+	assert.equal(existsSync(nativeWorkspace(id)), true);
+	await f.h.rebind({ workspaceRegistry: registry });
+	assert.equal((await f.h.call("nativeClose", { sessionId: id })).ok, true);
+	assert.equal(existsSync(nativeWorkspace(id)), false);
+	await f.finish();
+});
+
+test("native open fences a service generation change while awaiting its preset", async () => {
+	const presetGate = deferred(), presetStarted = deferred();
+	const f = await fixtureNative({ presetGate, presetStarted });
+	const opening = f.h.call("nativeOpen", {});
+	await presetStarted.promise;
+	await f.h.rebind({ workspaceRegistry: { ...f.workspaceRegistry } });
+	presetGate.resolve();
+	const result = await opening;
+	assert.equal(result.ok, false, "do not create with a preset or workspace from a revoked scope");
+	assert.match(result.error.message, /重载.*重试/);
+	assert.equal(f.createOptions.length, 0);
+	await f.finish();
+});
+
+test("native shutdown holds optional services until owned cleanup finishes", async () => {
+	const f = await fixtureNative();
+	const response = await f.h.call("nativeOpen", {});
+	assert.equal(response.ok, true, JSON.stringify(response));
+	await f.h.cleanup(true); // Cordis unloads parent effects and injected child scopes concurrently.
+	assert.equal(existsSync(nativeDir(response.value.sessionId)), false);
+	assert.equal(existsSync(nativeWorkspace(response.value.sessionId)), false);
+	assert.deepEqual(f.h.warnings, []);
+	await f.finish();
+});
+
+test("real Cordis unload keeps native cleanup inside the optional-provider lifetime", async () => {
+	const f = await fixtureNative();
+	await f.h.cleanup();
+	const context = new Context(), warnings = [];
+	let call;
+	const services = { ...f.h.services, connection: { rpc: { handle(_path, fn) { call = fn; return () => {}; } } } };
+	for (const [name, service] of Object.entries(services)) context.provide(name, service);
+	const fiber = context.plugin({
+		inject: ["llm", "agentDefaultModel", "agents", "connection", "webServer", "profileContext", "sessionPersistence"],
+		apply(ctx) {
+			// Use the embedding entry point, with actual Cordis dependency scopes.
+			apply({ ...services, get: name => ctx.get(name), inject: (names, fn) => ctx.inject(names, fn),
+				effect: fn => ctx.effect(fn), extend(fields) { return { ...this, ...fields }; },
+				logger: { warn: warning => warnings.push(warning) },
+			});
+		},
+	});
+	try {
+		await fiber.await();
+		// The nested optional scope mounts asynchronously after its parent.
+		await tick();
+		const response = await call("nativeOpen", {});
+		assert.equal(response.ok, true, JSON.stringify(response));
+		await fiber.dispose();
+		assert.equal(existsSync(nativeDir(response.value.sessionId)), false);
+		assert.equal(existsSync(nativeWorkspace(response.value.sessionId)), false);
+		assert.deepEqual(warnings, []);
+	} finally {
+		await context.fiber.dispose();
+		await f.finish();
+	}
+});
+
+test("native close acknowledges a completed burn after host scope reload but never pending records", async () => {
+	const f = await fixtureNative();
+	const response = await f.h.call("nativeOpen", {});
+	assert.equal(response.ok, true, JSON.stringify(response));
+	const id = response.value.sessionId;
+	await f.h.cleanup();
+	// A fresh persistence listing no longer contains the deleted JSONL.
+	f.h.services.sessionPersistence.items.delete(id);
+	const { connection: oldConnection, ...reloadedServices } = f.h.services;
+	const reloaded = host({}, reloadedServices);
+	const receipt = await reloaded.call("nativeClose", { sessionId: id });
+	assert.deepEqual(receipt, { ok: true, value: { burned: true } });
+	assert.equal((await reloaded.call("nativeClose", { sessionId: randomUUID() })).ok, false);
+	await reloaded.cleanup();
+	await f.finish();
+
+	const options = { disposeError: true }, pending = await fixtureNative(options);
+	const opened = await pending.h.call("nativeOpen", {});
+	assert.equal(opened.ok, true, JSON.stringify(opened));
+	await pending.h.cleanup();
+	const { connection: pendingConnection, ...nextServices } = pending.h.services;
+	const next = host({}, nextServices);
+	assert.equal((await next.call("nativeClose", opened.value)).ok, false, "a deny marker alone does not prove cleanup completed");
+	assert.equal(existsSync(nativeDir(opened.value.sessionId)), true);
+	await next.cleanup();
+	options.disposeError = false;
+	await pending.finish();
 });
 
 test("native creation failure removes only its owned JSONL and registered empty workspace", async () => {

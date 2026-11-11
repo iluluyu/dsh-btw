@@ -33,6 +33,13 @@ child 流程的全局新建不带 cwd/父会话，强制无父上下文；原生
 - 开启 attempt 持有原连接、上下文取消器、open promise 和子会话 ID；send/poll/close 始终使用这个连接。迟到 open 先交回 ID，再由同一 close 屏障释放，不另开清理支路。
 - 单轮最多一个 poll 在途；最终 poll 等待旧 poll。完成/退出清除 timer；退出中重复请求共用 `closingTemp`。卸载先对所有 controller 启动该屏障，再释放 UI 服务并清空活动选择；卸载后的清理失败依赖宿主已有恢复记录，不声称已经删除。
 
+## 原生临时聊天的服务生命周期约束
+
+- 缓存存储适配器可以跨可选注入 scope 复用，但清理回调必须在执行时重新取得当前 gate、workspaceRegistry 和 sessions；不得把首次注入的 domain/entity 当作永久服务，否则重载后会报 `domain 'workspace' is closed`。
+- 一次 native open 固定自己的服务代次，异步准备、preset 挂载和 Session 关联后都需核对代次；依赖已重建时取消本次开启并清理本人预留资源，不混用新旧服务。客户端在 host 返回 ID 后、任何 workspace adopt await 之前登记 owner；导航、连接或注入服务变更必须在 adopt 前后及目录刷新后核对，过期结果只通过创建连接清理，不抢回页面。
+- 父 scope 与可选依赖 scope 并发卸载时，先设置 shutdown fence、等待在途开启，再共享同一 native close 屏障；可选依赖在本人 writer/注册清理结束前不得释放。
+- `burned: true` 必须有证据。重载丢失内存回执时，只能在永久拒写标记存在、本人恢复记录及 live/durable Session 和 workspace 引用均已不存在时确认已完成；该路径只确认，不删除未知 ID。清理未完成则保留记录并报告失败。
+
 ## 历史验收顺序
 
 以下是最初单聊天阶段的验收顺序；本轮多聊天和统一视图的证据另记在 [verification.md](verification.md)，不将旧记录当作新行为已通过。
