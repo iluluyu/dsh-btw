@@ -12,7 +12,7 @@ Independent btw chats for [DeepSeek Harness](https://github.com/deepseek-ai/deep
 - **Models and context per entry**: the composer and the standalone entry keep separate defaults; with a source session the default follows its current model, otherwise the DSH default. Context scope: none, recent, on-demand search, or all recorded text.
 - **Real thinking**: live reasoning expands while the model reasons and collapses when the answer starts.
 - **Return to draft**: select messages and insert them into the source session draft; nothing is overwritten or sent automatically.
-- **Minimize is not end**: minimizing hides back to the original btw chip and continues the same chat; Esc behaves like ×: it ends this btw at once and cleans up in the background, the surface disappears in the same tick, nothing is parked for a return, and the user is never navigated back to a previous session; only a failure resurfaces with the reason. Esc never destroys the temporary chat page.
+- **Minimize is not end**: minimizing hides back to the original btw chip and continues the same chat; Esc behaves like ×: it ends this btw at once and cleans up in the background, the surface disappears in the same tick, nothing is parked for a return, and the user is never navigated back to a previous session; only a failure resurfaces with the reason. Esc does not need focus inside the btw — it works from the host composer and dismisses the focused btw first, otherwise the most recently used one; native menus, listboxes and dialogs keep their own Escape, and the temporary chat page is never destroyed by Esc.
 
 ## Install
 

@@ -1867,22 +1867,25 @@ test("fixed to sidebar carries completed question, answer, model/context and uns
 	assert.equal(env.calls.filter(c => c[1] === "open").length, 1); assert.equal(env.calls.filter(c => c[1] === "send").length, 1); env.cleanup();
 });
 
-test("Escape outside an overlay never closes the last active chat, including stale activeId and explicit outside targets", async () => {
+test("Escape closes the btw last used even when focus sits in the host composer", async () => {
 	const env = await setup({}, { effects: true }); await tick();
 	const overlay = env.registrations.get("btw"); env.render(env.registrations.get("btw-temp"), { sessionId: "origin" }).props.onClick();
 	button(typeTemp(env, overlay, "first draft"), "新建临时聊天").props.onClick(); typeTemp(env, overlay, "second draft");
 	let tree = focusChat(env, overlay, "btw-1");
-	const first = escapeTarget(tree, "btw-1"), second = escapeTarget(tree, "btw-2"), outside = { closest: () => null };
-	env.setActiveElement(outside); env.dispatch("keydown", { key: "Escape", target: outside }); env.dispatch("keydown", { key: "Escape" });
-	assert.equal(all(env.render(overlay), n => n.props["data-chat-id"]).length, 2, "main-composer focus does not inherit stale window ownership");
-	env.setActiveElement(first); env.dispatch("keydown", { key: "Escape", target: outside }); await tick();
+	const second = escapeTarget(tree, "btw-2"), outside = { closest: () => null };
+	// Focus stays in the host composer; Esc still dismisses the btw used last.
+	env.setActiveElement(outside);
+	env.dispatch("keydown", { key: "Escape", target: outside, composedPath: () => [] }); await tick();
 	tree = env.render(overlay);
-	assert.equal(all(tree, n => n.props["data-chat-id"]).length, 1, "Esc acts on the chat that owns keyboard focus, exactly once");
-	assert.ok(chatWindow(tree, "btw-2"), "the unfocused chat survives");
-	assert.equal(all(chatWindow(tree, "btw-2"), n => n.type === "textarea")[0].props.value, "second draft");
+	assert.equal(all(tree, n => n.props["data-chat-id"]).length, 1, "exactly one btw leaves");
+	assert.ok(chatWindow(tree, "btw-2"), "the other chat survives");
 	assert.deepEqual(env.calls.filter(c => c[1] === "close"), [], "a draft-only chat has no host record to clean");
-	focusChat(env, overlay, "btw-2"); env.setActiveElement(second); env.dispatch("keydown", { key: "Escape", target: second }); await tick();
-	tree = env.render(overlay); assert.equal(tree, null, "the focused chat leaves as well");
+	// A native menu consuming Escape keeps it for itself.
+	env.setActiveElement(second);
+	env.dispatch("keydown", { key: "Escape", target: { closest: sel => sel.includes("role=menu") ? {} : null }, composedPath: () => [] });
+	assert.ok(chatWindow(env.render(overlay), "btw-2"), "menu Escape never ends the chat");
+	env.dispatch("keydown", { key: "Escape", target: second, composedPath: () => [second] }); await tick();
+	assert.equal(env.render(overlay), null, "the last chat leaves on its own Escape");
 	env.cleanup();
 });
 
@@ -2757,5 +2760,23 @@ test("Esc ends the btw from the native sidebar as well", async () => {
 	assert.equal(env.render(overlay, inline), null, "the sidebar page leaves at once");
 	assert.deepEqual(env.calls.filter(c => c[1] === "close").map(c => c[2].sessionId), ["fixture-child"], "its child is cleaned up");
 	assert.equal(surface.rows().length, 0, "the emptied sidebar tab is retired");
+	env.cleanup();
+});
+
+test("Esc from the host composer ends the open sidebar btw without focus inside it", async () => {
+	const surface = publicSidebar();
+	const env = await setup({ tempPresentation: "sidebar" }, { effects: true, sidebar: surface.right, layout: { selectPanel() {} } });
+	const overlay = env.registrations.get("btw"), inline = { inline: true };
+	env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick(); await tick();
+	let tree = typeTemp(env, overlay, "sidebar no focus", inline);
+	if (!all(tree, n => n.type === "textarea").length) { all(tree, n => n.props["aria-label"] === "展开输入框")[0]?.props.onClick(); tree = env.render(overlay, inline); }
+	button(tree, "发送").props.onClick(); await tick(); await tick();
+	// Focus remains in the host composer; the btw sidebar page still answers Esc.
+	const outside = { closest: () => null };
+	env.setActiveElement(outside);
+	env.dispatch("keydown", { key: "Escape", target: outside, composedPath: () => [] }); await tick();
+	assert.equal(env.render(overlay, inline), null, "the sidebar btw leaves without owning focus");
+	assert.deepEqual(env.calls.filter(c => c[1] === "close").map(c => c[2].sessionId), ["fixture-child"]);
+	assert.equal(surface.rows().length, 0);
 	env.cleanup();
 });
