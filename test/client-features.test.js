@@ -705,7 +705,8 @@ test("standalone legacy view retains shared child transport and waits for close"
 	assert.equal(all(tree, (n) => n.type === "input" && n.props.type === "checkbox").length, 0);
 	assert.equal(all(tree, (n) => n.props.className === "dsh-btw-msub")[0].children[0], "", "settled headers do not repeat lifecycle instructions");
 	all(tree, (n) => n.type === "button" && n.props["aria-label"] === "结束临时聊天")[0].props.onClick();
-	assert.deepEqual(selected, ["dsh-btw-global"]);
+	// Ending leaves the panel in the same tick; the host cleanup finishes later.
+	assert.deepEqual(selected, ["dsh-btw-global", null]);
 	resolveClose({ ok: true, value: {} }); await tick();
 	assert.deepEqual(selected, ["dsh-btw-global", null]);
 	env.cleanup();
@@ -2202,7 +2203,8 @@ test("mode changes retire only owned sidebar pages, keep the child, and explicit
 	assert.equal(env.calls.some(c => c[1] === "close"), false, "programmatic tab retirement cannot close the continuing child");
 	modeControl(env.render(overlay), "sidebar").props.onClick();
 	button(env.render(overlay, inline), "结束临时聊天").props.onClick();
-	assert.equal(surface.rows().length, 1, "retain retry UI until resource cleanup completes");
+	assert.equal(surface.rows().length, 0, "the tab leaves immediately; cleanup continues in the background");
+	assert.equal(surface.expanded(), false, "the emptied column collapses right away");
 	end.resolve({ ok: true, value: {} }); await tick();
 	assert.equal(surface.rows().length, 0); assert.equal(surface.expanded(), false);
 	assert.equal(env.render(env.registrations.get("dsh-btw/temp"), { btwSessionId: "origin" }), null, "no restore component or hidden resurrection");
@@ -2231,7 +2233,8 @@ test("failed internal sidebar close remains retryable; another source/tab never 
 	button(next.render(view, inline), "结束临时聊天").props.onClick();
 	moved.seed("other", "other-editor", "editor"); moved.switchSource("other");
 	gate.resolve({ ok: true, value: {} }); await tick();
-	assert.ok(moved.rows().some(tab => tab.tabId === "other-editor")); assert.equal(moved.closed.length, 0);
+	assert.ok(moved.rows().some(tab => tab.tabId === "other-editor"));
+	assert.deepEqual(moved.closed.map(tab => tab.kind), ["btw-temp"], "ending closes only its own tab, in the same tick");
 	moved.switchSource("origin");
 	assert.deepEqual(moved.closed.map(tab => tab.kind), ["btw-temp"]);
 	assert.ok(moved.rows().some(tab => tab.tabId === "other-editor"));
@@ -2691,5 +2694,43 @@ test("closing the only fullscreen btw panel returns to the conversation", async 
 	selected.length = 0;
 	button(tree, "结束临时聊天").props.onClick(); await tick();
 	assert.deepEqual(selected, [null], "the emptied panel closes instead of showing a blank shell");
+	env.cleanup();
+});
+
+test("ending leaves the surface at once and cleans up in the background", async () => {
+	const end = deferred();
+	const env = await setup({}, { effects: true, rpc: method => method === "close" ? end.promise : ({ ok: true, value: method === "models" ? { providers: [] } : method === "open" ? { sessionId: "bg-child" } : method === "send" ? { output: "ok" } : { text: "", lastSeq: 0 } }) });
+	const overlay = env.registrations.get("btw");
+	env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
+	button(typeTemp(env, overlay, "background close"), "发送").props.onClick(); await tick(); await tick();
+	const tree = env.render(overlay);
+	button(tree, "结束临时聊天").props.onClick();
+	assert.equal(env.render(overlay), null, "the window disappears in the same tick");
+	assert.doesNotMatch(JSON.stringify(env.render(overlay) ?? {}), /正在清理/, "no cleanup placeholder is rendered");
+	assert.equal(env.calls.filter(c => c[1] === "close").length, 1, "cleanup is still requested");
+	end.resolve({ ok: true, value: {} }); await tick();
+	assert.equal(env.render(overlay), null);
+	env.cleanup();
+});
+
+test("a failed background cleanup comes back with the real reason and can be retried", async () => {
+	let attempts = 0;
+	const env = await setup({}, { effects: true, rpc: method => {
+		if (method === "models") return { ok: true, value: { providers: [] } };
+		if (method === "open") return { ok: true, value: { sessionId: "retry-child" } };
+		if (method === "send") return { ok: true, value: { output: "ok" } };
+		if (method === "close") return ++attempts === 1 ? { ok: false, error: { message: "EBUSY" } } : { ok: true, value: {} };
+		return { ok: true, value: { text: "", lastSeq: 0 } };
+	} });
+	const overlay = env.registrations.get("btw");
+	env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
+	button(typeTemp(env, overlay, "retry me"), "发送").props.onClick(); await tick(); await tick();
+	button(env.render(overlay), "结束临时聊天").props.onClick(); await tick(); await tick();
+	const tree = env.render(overlay);
+	assert.ok(tree, "a failed cleanup is reported instead of pretending success");
+	assert.match(JSON.stringify(tree), /EBUSY/, "the host's real reason is visible");
+	button(tree, "结束临时聊天").props.onClick(); await tick();
+	assert.equal(env.render(overlay), null, "the retry ends it");
+	assert.equal(attempts, 2);
 	env.cleanup();
 });
