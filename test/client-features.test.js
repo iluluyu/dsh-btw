@@ -165,12 +165,38 @@ test("a workspace list that populates after mode start enters directly without r
 	assert.equal(env.render(entry).props["aria-label"], "结束临时聊天"); env.cleanup();
 });
 
-test("a host that keeps forcing a blank selection stops re-asserting and exits temporary mode cleanly", async () => {
+test("an unassigned picker blank stays visible until its workspace is known", async () => {
+	const f = nativeFixture(), item = { workspaceId: "w", path: "/w", createdAt: "2026-01-01T00:00:00Z", sessionIds: [] };
+	const workspaces = workspaceChoices([item]);
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick(); await tick();
+	f.byId.picker = { blank: true, retainedBy: {} }; f.select("picker"); await tick();
+	assert.deepEqual(f.navigation, [["open", "owned"]], "do not pull the user away from the workspace picker");
+	assert.equal(env.render(entry).props["aria-pressed"], true);
+	f.byId.picker.cwd = "/w"; workspaces.set([{ ...item, sessionIds: ["picker"] }]); await tick();
+	assert.deepEqual(f.navigation, [["open", "owned"], ["open", "owned"]], "the committed choice returns to the existing temp conversation");
+	assert.equal(env.calls.filter(call => call[1] === "nativeOpen").length, 1);
+	assert.equal(env.calls.filter(call => call[1] === "nativeClose").length, 0); env.cleanup();
+});
+
+test("independent picker commits do not exhaust a lifetime re-assertion budget", async () => {
 	const f = nativeFixture(), workspaces = workspaceChoices([{ workspaceId: "w", path: "/w", createdAt: "2026-01-01T00:00:00Z", sessionIds: [] }]);
 	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
 	const entry = env.registrations.get("conversation.header.leading");
 	env.render(entry).props.onClick(); await tick(); await tick();
-	f.byId.fresh = { blank: true, retainedBy: {} };
+	for (let i = 0; i < 5; i++) { const id = "blank-" + i; f.byId[id] = { blank: true, cwd: "/w", retainedBy: {} }; f.select(id); await tick(); }
+	assert.equal(f.navigation.filter(step => step[0] === "open").length, 6);
+	assert.equal(env.calls.filter(call => call[1] === "nativeClose").length, 0);
+	assert.equal(env.render(entry).props["aria-pressed"], true); env.cleanup();
+});
+
+test("a host that keeps forcing the same known blank stops re-asserting and exits temporary mode cleanly", async () => {
+	const f = nativeFixture(), workspaces = workspaceChoices([{ workspaceId: "w", path: "/w", createdAt: "2026-01-01T00:00:00Z", sessionIds: [] }]);
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick(); await tick();
+	f.byId.fresh = { blank: true, cwd: "/w", retainedBy: {} };
 	for (let i = 0; i < 4; i++) { f.select("fresh"); await tick(); }
 	assert.equal(env.calls.filter(call => call[1] === "nativeOpen").length, 1, "no second conversation is ever created");
 	assert.deepEqual(f.navigation.filter(step => step[0] === "open"), [["open", "owned"], ["open", "owned"], ["open", "owned"], ["open", "owned"]], "three bounded re-assertions, then the mode stops fighting");
