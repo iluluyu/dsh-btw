@@ -273,7 +273,7 @@ async function fixtureNative(options = {}) {
 		} };
 	} };
 	const services = { agents, sessionPersistence: persistence, sessions, workspaceRegistry,
-		agentPresets: { resolve: async () => { options.presetStarted?.resolve(); await options.presetGate?.promise; return { id: "ordinary-default" }; }, mount: async (_ctx, preset) => mounts.push(preset) },
+		agentPresets: { resolve: async preset => { options.presetStarted?.resolve(); await options.presetGate?.promise; return { id: preset ?? "ordinary-default" }; }, mount: async (_ctx, preset) => mounts.push(preset) },
 		btwNativeCache: gate, storage: { backend: { get: name => { assert.equal(name, BACKEND); return gate; } } },
 		storageDomain, sessionProjectionCache: {},
 	};
@@ -390,6 +390,21 @@ test("native root uses ordinary default preset/model, rejects source payloads an
 	assert.deepEqual(await f.h.call("nativeClose", { sessionId: id }), { ok: true, value: { burned: true } });
 	await f.finish();
 	assert.equal(f.delegateClosed(), false, "borrowed JSON backend remains open");
+});
+
+test("native open inherits an explicitly selected agent preset", async () => {
+	const f = await fixtureNative();
+	for (const agentPreset of ["", " ", 4, "x".repeat(257)]) {
+		const rejected = await f.h.call("nativeOpen", { agentPreset });
+		assert.equal(rejected.ok, false);
+		assert.equal(f.createOptions.length, 0);
+	}
+	const response = await f.h.call("nativeOpen", { agentPreset: "creative" });
+	assert.equal(response.ok, true, JSON.stringify(response));
+	assert.equal(f.createOptions[0].meta.agentPreset, "creative");
+	assert.deepEqual(f.mounts, ["creative"]);
+	assert.equal((await f.h.call("nativeClose", response.value)).ok, true);
+	await f.finish();
 });
 
 test("native close waits for disposal then idle, failed close retains records and is retryable", async () => {
@@ -779,6 +794,14 @@ test("native orphan recovery checks owner/inodes, cleans JSONL before workspace,
 		writeFileSync(path, JSON.stringify(record));
 	}
 	const recovered = await fixtureNative();
+	recovered.gate.runtime = "0.2.2-rc.3";
+	const mismatch = await recovered.h.call("nativeOpen", {});
+	assert.equal(mismatch.ok, false);
+	assert.match(mismatch.error.message, /native 存储版本/);
+	assert.equal(existsSync(nativeDir(id)), true, "mixed versions must not recover JSONL");
+	assert.equal(existsSync(nativeWorkspace(id)), true, "mixed versions must not recover workspaces");
+	assert.equal(existsSync(join(root, ".btw-native-records", `${id}.json`)), true);
+	recovered.gate.runtime = "0.2.2-rc.1";
 	const fresh = await recovered.h.call("nativeOpen", {});
 	assert.equal(fresh.ok, true, JSON.stringify(fresh));
 	assert.equal(existsSync(nativeDir(id)), false);

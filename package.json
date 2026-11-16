@@ -1,6 +1,6 @@
 {
   "name": "dsh-btw",
-  "version": "0.0.8",
+  "version": "0.0.10",
   "description": "Side questions (/btw) and ephemeral temporary chat for DeepSeek Harness (dsh) web — ask without interrupting the main agent, clean up temporary session records",
   "type": "module",
   "main": "lib/index.js",
@@ -18,7 +18,7 @@
   ],
   "scripts": {
     "prepublishOnly": "npm run check && npm test",
-    "check": "node --check lib/index.js && node --check lib/client.js && node --check lib/client.controllers.js && node --check lib/client.geometry.js && node --check lib/client.messages.js && node --check lib/client.views.js && node --check lib/client.settings.js && node --check lib/context-search.js && node --check lib/native-cache.js && node --check lib/native-cache-workspaces.js",
+    "check": "node --check lib/index.js && node --check lib/client.js && node --check lib/client.controllers.js && node --check lib/client.geometry.js && node --check lib/client.messages.js && node --check lib/client.views.js && node --check lib/client.settings.js && node --check lib/context-search.js && node --check lib/host-platform.js && node --check lib/native-cache.js && node --check lib/native-cache-workspaces.js",
     "test": "node --test test/*.test.js"
   },
   "repository": {

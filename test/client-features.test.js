@@ -43,8 +43,9 @@ async function setup(config = {}, options = {}) {
 		document: { querySelector: () => null, createElement: () => ({ dataset: {} }), head: { appendChild: (tag) => styles.push(tag.textContent) },
 			addEventListener: (type, fn) => { if (!events.has(type)) events.set(type, new Set()); events.get(type).add(fn); },
 			removeEventListener: (type, fn) => events.get(type)?.delete(fn) },
-		setInterval: options.setInterval || setInterval, clearInterval: options.clearInterval || clearInterval, setTimeout: options.setTimeout || setTimeout, clearTimeout: options.clearTimeout || clearTimeout, AbortController, TextEncoder, ResizeObserver: options.ResizeObserver, Date: options.Date || Date, requestAnimationFrame() {},
+		setInterval: options.setInterval || setInterval, clearInterval: options.clearInterval || clearInterval, setTimeout: options.setTimeout || setTimeout, clearTimeout: options.clearTimeout || clearTimeout, AbortController, TextEncoder, ResizeObserver: options.ResizeObserver, MutationObserver: options.MutationObserver, Date: options.Date || Date, requestAnimationFrame() {},
 	};
+	Object.assign(sandbox.document, options.document);
 	const loader = clientLoader(sandbox, (id) => {
 		required.push(id);
 		if (id === "react") return React;
@@ -98,7 +99,10 @@ test("source-free entry uses native RPC and closes only its owned session", asyn
 	const env = await setup({}, { lazy: true, layout, workspace: { uiWorkspace, sessions, layout }, workspaces: defaultWorkspace(byId), rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : method === "nativeClose" ? { burned: true } : { providers: [] } }) });
 	env.render(env.registrations.get("conversation.header.leading")).props.onClick(); await tick();
 	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen"]);
-	assert.ok(env.styles.some(css => css.includes('[data-conversation-session="owned"] [data-composer-card]') && css.includes('[data-conversation-session="owned"] [data-message-bubble]') && css.includes('dashed')));
+	const nativeStyle = env.styles.find(css => css.includes('[data-conversation-session="owned"] [data-composer-card]') && css.includes('[data-conversation-session="owned"] [data-message-bubble]'));
+	assert.match(nativeStyle, /outline:\s*1px dashed/);
+	assert.match(nativeStyle, /outline-offset:\s*-1px/);
+	assert.doesNotMatch(nativeStyle, /(?:^|[;{])\s*border\s*:/, "the temporary indicator must not change layout geometry");
 	assert.equal(env.render(env.registrations.get("btw")), null, "native session has no fake composer or controls");
 	const button = env.render(env.registrations.get("btw-temp"), { sessionId: "owned" });
 	assert.equal(button.props["aria-label"], "结束临时聊天");
@@ -178,6 +182,20 @@ test("an unassigned picker blank stays visible until its workspace is known", as
 	assert.deepEqual(f.navigation, [["open", "owned"], ["open", "owned"]], "the committed choice returns to the existing temp conversation");
 	assert.equal(env.calls.filter(call => call[1] === "nativeOpen").length, 1);
 	assert.equal(env.calls.filter(call => call[1] === "nativeClose").length, 0); env.cleanup();
+});
+
+test("a picker blank with stale workspace membership follows its committed cwd", async () => {
+	const f = nativeFixture();
+	const workspaces = workspaceChoices([{ workspaceId: "old", path: "/old", createdAt: "2026-01-01", sessionIds: [] }]);
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces, rpc: (method, payload) => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned-" + payload.workspaceId } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick(); await tick();
+	f.byId.picker = { blank: true, cwd: "/new", retainedBy: {} };
+	workspaces.set([{ workspaceId: "old", path: "/old", createdAt: "2026-01-01", sessionIds: ["picker"] }, { workspaceId: "new", path: "/new", createdAt: "2026-01-02", sessionIds: [] }]);
+	f.select("picker"); await tick(); await tick();
+	assert.deepEqual(env.calls.filter(call => call[1] === "nativeOpen").map(call => call[2].workspaceId), ["old", "new"]);
+	assert.equal(f.byId["owned-new"].retainedBy.mainView, 1);
+	env.cleanup();
 });
 
 test("independent picker commits do not exhaust a lifetime re-assertion budget", async () => {
@@ -344,6 +362,153 @@ test("native open inherits the selected Session's workspace without sending its 
 	assert.deepEqual(f.navigation, [["open", "owned"]]);
 	env.render(env.registrations.get("btw-temp"), { sessionId: "owned" }).props.onClick(); await tick();
 	assert.deepEqual(f.navigation, [["open", "owned"], ["archive", "owned"]], "ending clears only the owned native view without restoring the source"); env.cleanup();
+});
+
+test("preset bridge preserves only an inert visual copy until the target mode matches", async () => {
+	const f = nativeFixture(), clock = backgroundClock(), roots = new Map(), copies = [], observers = []; let opens = 0;
+	f.byId.blank = { blank: true, cwd: "/native/project", projectionValues: { agentPreset: "creative" }, retainedBy: {} }; f.select("blank");
+	const rect = (left, top, width, height) => ({ left, top, width, height, bottom: top + height });
+	function modeRoot(label) {
+		const workspace = { hasAttribute: name => name === "aria-label", getBoundingClientRect: () => rect(10, 80, 80, 20) };
+		const mode = { textContent: label, hasAttribute: () => false, getBoundingClientRect: () => rect(100, 80, 90, 20), cloneNode() {
+			const copy = { style: {}, attrs: {}, inert: false, removed: false, removeAttribute() {}, querySelectorAll: () => [], setAttribute(name, value) { this.attrs[name] = value; }, remove() { this.removed = true; } };
+			copies.push(copy); return copy;
+		} };
+		return { querySelector: () => ({ getBoundingClientRect: () => rect(0, 110, 400, 100) }), querySelectorAll: () => [workspace, mode] };
+	}
+	roots.set("blank", modeRoot("creative"));
+	class FakeMutationObserver { constructor(callback) { this.callback = callback; this.disconnected = false; observers.push(this); } observe() {} disconnect() { this.disconnected = true; } }
+	const document = { body: { appendChild() {} }, querySelector: selector => roots.get(JSON.parse(selector.match(/=(.*)\]$/)[1])) };
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, document, MutationObserver: FakeMutationObserver, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+		rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: ++opens === 1 ? "owned" : "owned-2" } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick(); await tick();
+	assert.equal(copies.length, 1);
+	assert.equal(copies[0].attrs["aria-hidden"], "true");
+	assert.equal(copies[0].inert, true);
+	assert.equal(copies[0].style.pointerEvents, "none");
+	roots.set("owned", modeRoot("standard")); observers[0].callback();
+	assert.equal(copies[0].removed, false, "do not expose the host's transient default mode");
+	roots.set("owned", modeRoot("creative")); observers[0].callback();
+	assert.equal(copies[0].removed, true);
+	assert.equal(observers[0].disconnected, true);
+	assert.equal(clock.size(), 0);
+	env.render(entry).props.onClick(); await tick();
+	assert.equal(copies.length, 2, "return navigation has the same visual bridge");
+	env.dispatch("pointerdown", {});
+	assert.equal(copies[1].removed, true, "user input immediately removes the inert overlay");
+	assert.equal(observers[1].disconnected, true);
+	assert.equal(clock.size(), 0);
+	env.render(entry).props.onClick(); await tick(); await tick();
+	assert.equal(copies.length, 3);
+	clock.flush();
+	assert.equal(copies[2].removed, true, "missing target mode cannot leave a stale overlay");
+	assert.equal(observers[2].disconnected, true);
+	env.cleanup();
+});
+
+test("native temporary mode inherits the selected blank's actual preset", async () => {
+	const f = nativeFixture();
+	f.byId.blank = { blank: true, cwd: "/native/project", projectionValues: { agentPreset: "creative" }, retainedBy: {} }; f.select("blank");
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
+	env.render(env.registrations.get("conversation.header.leading")).props.onClick(); await tick(); await tick();
+	assert.deepEqual(JSON.parse(JSON.stringify(env.calls.find(call => call[1] === "nativeOpen")[2])), { workspaceId: "workspace-one", agentPreset: "creative" });
+	env.cleanup();
+});
+
+test("changing workspace preserves the preset selected in the temporary conversation", async () => {
+	const f = nativeFixture();
+	const a = { workspaceId: "a", path: "/a", createdAt: "2026-01-01", sessionIds: [] };
+	const b = { workspaceId: "b", path: "/b", createdAt: "2026-01-02", sessionIds: ["blank-b"] };
+	const workspaces = workspaceChoices([a]);
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces, rpc: (method, payload) => {
+		if (method === "nativeOpen") { const id = `owned-${payload.workspaceId}`; f.byId[id] = { blank: true, projectionValues: { agentPreset: "creative" }, retainedBy: {} }; return { ok: true, value: { sessionId: id } }; }
+		return { ok: true, value: { burned: true } };
+	} });
+	env.render(env.registrations.get("conversation.header.leading")).props.onClick(); await tick(); await tick();
+	f.byId["blank-b"] = { blank: true, cwd: "/b", projectionValues: { agentPreset: "standard" }, retainedBy: {} };
+	workspaces.set([a, b]); f.select("blank-b"); await tick(); await tick();
+	const requests = env.calls.filter(call => call[1] === "nativeOpen").map(call => JSON.parse(JSON.stringify(call[2])));
+	assert.deepEqual(requests, [{ workspaceId: "a" }, { workspaceId: "b", agentPreset: "creative" }]);
+	env.cleanup();
+});
+
+test("a preset changed in temporary mode follows the returned normal blank", async () => {
+	const f = nativeFixture(), creates = [];
+	f.byId.blank = { blank: true, cwd: "/native/project", projectionValues: { agentPreset: "standard" }, retainedBy: {} }; f.select("blank");
+	f.sessions.create = options => { creates.push(options); return Promise.resolve("blank"); };
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => {
+		if (method === "nativeOpen") { f.byId.owned = { blank: true, projectionValues: { agentPreset: "creative" }, retainedBy: {} }; return { ok: true, value: { sessionId: "owned" } }; }
+		return { ok: true, value: { burned: true } };
+	} });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick(); await tick();
+	env.render(entry).props.onClick(); await tick(); await tick();
+	assert.deepEqual(JSON.parse(JSON.stringify(creates)), [{ workspaceId: "workspace-one", sessionId: "blank", agentPreset: "creative" }]);
+	assert.equal(f.byId.blank.retainedBy.mainView, 1);
+	assert.equal(env.calls.filter(call => call[1] === "nativeClose").length, 1); env.cleanup();
+});
+
+test("ending native temporary mode returns to its retained blank without creating another session", async () => {
+	const f = nativeFixture();
+	f.byId.blank = { blank: true, cwd: "/native/project", retainedBy: {} }; f.select("blank");
+	f.sessions.create = () => assert.fail("reuse the same empty conversation");
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick(); await tick();
+	env.render(entry).props.onClick(); await tick(); await tick();
+	assert.deepEqual(f.navigation, [["open", "owned"], ["open", "blank"]]);
+	assert.equal(f.byId.blank.retainedBy.mainView, 1);
+	assert.equal(env.calls.filter(call => call[1] === "nativeClose").length, 1);
+	env.cleanup();
+});
+
+test("ending native temporary mode opens a normal blank in the same workspace before cleanup", async () => {
+	const f = nativeFixture(), pending = deferred(), creations = [];
+	f.sessions.create = options => { creations.push(options); return pending.promise; };
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick(); await tick();
+	env.render(entry).props.onClick(); await tick();
+	assert.equal(env.render(entry).props["aria-pressed"], false);
+	assert.deepEqual(JSON.parse(JSON.stringify(creations)), [{ workspaceId: "workspace-one" }]);
+	assert.equal(env.calls.filter(call => call[1] === "nativeClose").length, 0, "keep the current view until its replacement is ready");
+	pending.resolve("normal"); await tick(); await tick();
+	assert.deepEqual(f.navigation, [["open", "owned"], ["open", "normal"]]);
+	assert.equal(env.calls.filter(call => call[1] === "nativeClose").length, 1);
+	assert.equal(f.byId.normal.retainedBy.mainView, 1);
+	env.cleanup();
+});
+
+test("a late normal blank never overrides the user's next navigation", async () => {
+	const f = nativeFixture(), pending = deferred();
+	f.sessions.create = () => pending.promise;
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick(); await tick();
+	env.render(entry).props.onClick(); await tick();
+	f.select("other"); pending.resolve("normal"); await tick(); await tick();
+	assert.equal(f.byId.other.retainedBy.mainView, 1);
+	assert.equal(f.navigation.some(([action, id]) => action === "open" && id === "normal"), false);
+	assert.equal(env.calls.filter(call => call[1] === "nativeClose").length, 1);
+	env.cleanup();
+});
+
+test("a stalled normal replacement cannot block cleanup or override a later temporary chat", async () => {
+	const f = nativeFixture(), pending = deferred(), clock = backgroundClock(); let opens = 0;
+	f.sessions.create = () => pending.promise;
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+		rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: `owned-${++opens}` } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick(); await tick();
+	env.render(entry).props.onClick(); await tick();
+	clock.flush(); await tick(); await tick();
+	assert.equal(env.calls.filter(call => call[1] === "nativeClose").length, 1);
+	env.render(entry).props.onClick(); await tick(); await tick();
+	pending.resolve("late-normal"); await tick(); await tick();
+	assert.equal(f.byId["owned-2"].retainedBy.mainView, 1);
+	assert.equal(f.navigation.some(([action, id]) => action === "open" && id === "late-normal"), false);
+	env.cleanup();
 });
 
 test("native open is single-flight and a late result cannot override user navigation", async () => {

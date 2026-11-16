@@ -243,8 +243,8 @@ try {
 	env.NODE_OPTIONS = `--require=${guard}`;
 	const bin = process.env.DSH_BIN || 'dsh';
 	const version = await promisify(execFile)(bin, ['--version'], { cwd: root, env, timeout: 10000 });
-	runtimeVersion = version.stdout.trim();
-	assert.ok(['0.2.2-rc.1', '0.2.2-rc.3'].includes(runtimeVersion), 'expected a verified dsh version');
+	runtimeVersion = /(?:^|\s)(0\.2\.2-rc\.(?:1|3))$/.exec(version.stdout.trim())?.[1];
+	assert.ok(runtimeVersion, 'expected a verified dsh version');
 	console.log(`ok: dsh ${runtimeVersion}`);
 	// Use a patch instead of pnpm: no registry access and the checkout is loaded directly.
 	const patch = join(root, 'btw.patch.yml');
