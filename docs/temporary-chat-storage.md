@@ -2,7 +2,7 @@
 
 ## 范围
 
-当前适配器只识别 Linux 上 dsh `0.2.2-rc.1` 的默认 JSONL 实现。它绑定了安装版 `dsh-session-persistence-jsonl`、`dsh-agent-loop`、`dsh-home-paths` 的版本及运行时后端标识；不是通用删除 API。自定义根目录、未知后端和其他版本会在创建前拒绝临时聊天，侧问仍可使用。
+当前适配器识别 dsh `0.2.2-rc.1` 和 `0.2.2-rc.3` 的默认 JSONL 实现；rc.3 已在 Linux Web 和 Windows 桌面端验证。它绑定了安装版 `dsh-session-persistence-jsonl`、`dsh-agent-loop`、`dsh-home-paths` 的版本及运行时后端标识；不是通用删除 API。自定义根目录、未知后端和其他版本会在创建前拒绝临时聊天，侧问仍可使用。
 
 默认根目录由活动安装的 `dshHomePath("sessions")` 获取，不猜测 home：
 
@@ -15,7 +15,7 @@ $DSH_HOME/.btw-temp-records/<uuid>.json
 
 ## 原生普通 Session（显式启用）
 
-无来源 btw 可选用 DSH 原生普通对话页：`/btw nativeOpen` 创建 btw 独占的普通 root Session，前端用公开 `uiWorkspace.openSession(id)` 打开完整原生 conversation（composer、`+`、权限/模型选择、思考与消息渲染均由宿主提供）。路由由插件在每次配置解析时施加到有效配置（原始配置与持久化文件不变，设置保存重建也不会丢失）；用户显式路由到其他 backend 或 gate 未绑定时 `nativeOpen` 明确报错拒绝创建，客户端有限重试、后台保留诊断而不弹错误，不创建未受保护会话，旧 ask/open 协议保留可用。
+无来源 btw 可选用 DSH 原生普通对话页：`/btw nativeOpen` 创建 btw 独占的普通 root Session，前端用公开 `uiWorkspace.openSession(id)` 打开完整原生 conversation（composer、`+`、权限/模型选择、思考与消息渲染均由宿主提供）。gate backend 初始化成功后，插件才在配置解析时施加路由到有效配置（原始配置与持久化文件不变，设置保存重建也不会丢失）；用户显式路由到其他 backend 或 gate 未绑定时 `nativeOpen` 明确报错拒绝创建，客户端有限重试、后台保留诊断而不弹错误，不创建未受保护会话，旧 ask/open 协议保留可用。若过去手动写入了 `session_projcache: btw-native-json`，应从用户配置中移除该路由，让插件管理有效路由；手动配置的路由不会自动移除。
 
 创建前必须先对本人 UUID 落持久拒写标记（pre-create tombstone，gate 对本人 UUID 的 `session_projcache` 写入拒写、其他 key 透传），再创建 Session，因此投影缓存从不落盘。优先使用当前 Session 所属工作区并仅挂接本人 Session；无工作区时 cwd 是独占空目录，并为该目录建立专属 WorkspaceRegistry 注册 + `attachSession`。不从 HOME 或启动 cwd 猜测工作区：
 

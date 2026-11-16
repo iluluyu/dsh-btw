@@ -8,16 +8,16 @@
 //   node scripts/diagnose-native.mjs            # uses `dsh` on PATH
 //   DSH_BIN="C:\path\to\dsh.cmd" node scripts/diagnose-native.mjs
 import { spawn } from 'node:child_process';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir, hostname, release } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
 const plugin = fileURLToPath(new URL('../lib/index.js', import.meta.url));
-const root = await mkdtemp(join(tmpdir(), 'btw-diagnose-'));
+const root = await realpath(await mkdtemp(join(tmpdir(), 'btw-diagnose-')));
 const env = {
 	PATH: process.env.PATH ?? '', HOME: root, USERPROFILE: root,
 	XDG_CONFIG_HOME: join(root, 'config'), XDG_CACHE_HOME: join(root, 'cache'), XDG_DATA_HOME: join(root, 'data'),
@@ -29,7 +29,13 @@ const redact = s => s.replace(/([?&]token=)[^\s&]+/g, '$1<redacted>');
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const say = (...args) => console.log(...args);
 let child, output = '';
-const stop = () => { if (child?.pid) { try { process.kill(process.platform === 'win32' ? child.pid : -child.pid, 'SIGKILL'); } catch { /* already gone */ } } };
+const stop = () => {
+	if (!child?.pid) return;
+	try {
+		if (process.platform === 'win32') execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+		else process.kill(-child.pid, 'SIGKILL');
+	} catch { /* already gone */ }
+};
 
 async function rpc(origin, channel, method, payload, cookie) {
 	const rpcId = randomUUID();
@@ -65,7 +71,7 @@ try {
 	say(`dsh bin=${bin}`);
 	say(`dsh version=${(await promisify(execFile)(bin, ['--version'], { cwd: root, env, timeout: 30000, shell: process.platform === 'win32' })).stdout.trim()}`);
 	child = spawn(bin, ['--profile', 'web', '--patch', patch, '--host', '127.0.0.1', '--port', '0', '--no-open'], {
-		cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32',
+		cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32', detached: process.platform !== 'win32',
 	});
 	child.stdout.on('data', c => { output = (output + c).slice(-80000); });
 	child.stderr.on('data', c => { output = (output + c).slice(-80000); });

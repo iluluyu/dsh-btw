@@ -324,6 +324,16 @@ test("transient native capability initialization is retryable without a service 
 	await f.finish();
 });
 
+test("native open refuses mismatched supported storage generations", async () => {
+	const f = await fixtureNative();
+	f.gate.runtime = "0.2.2-rc.3";
+	const result = await f.h.call("nativeOpen", {});
+	assert.equal(result.ok, false);
+	assert.match(result.error.message, /native 存储版本/);
+	assert.equal(f.createOptions.length, 0);
+	await f.finish();
+});
+
 test("native capability and cached cleanup adapters rebind after a supported cache service reopen", async () => {
 	const f = await fixtureNative();
 	const first = await f.h.call("nativeOpen", {});
@@ -1123,6 +1133,26 @@ test("startup recovery preserves live owners and legacy/malformed records; recla
 	assert.equal(readFileSync(malformed, "utf8"), "{");
 });
 
+test("rc.3 recovers rc.1 records and preserves unknown-runtime records", async () => {
+	const packages = ["dsh-session-persistence-jsonl", "dsh-agent-loop", "dsh-home-paths"].map(name => join(dirname(anchor), "node_modules", "@deepseek-ai", name, "package.json"));
+	const originals = packages.map(path => readFileSync(path, "utf8"));
+	const owner = { ...ownerFor(process.pid), startTicks: "0" };
+	const old = await makeOrphan(owner);
+	const unknown = await makeOrphan(owner, { runtime: "0.2.2-rc.99" });
+	try {
+		packages.forEach((path, i) => writeFileSync(path, originals[i].replace("0.2.2-rc.1", "0.2.2-rc.3")));
+		await triggerRecovery();
+		assert.equal(existsSync(old.dir), false);
+		assert.equal(existsSync(recordPath(old.id)), false);
+		assert.equal(existsSync(unknown.dir), true);
+		assert.equal(existsSync(recordPath(unknown.id)), true);
+	} finally {
+		packages.forEach((path, i) => writeFileSync(path, originals[i]));
+		rmSync(unknown.dir, { recursive: true, force: true });
+		rmSync(recordPath(unknown.id), { force: true });
+	}
+});
+
 test("recovery validates inode and record schema; PID reuse does not suppress orphan recovery", async () => {
 	const owner = ownerFor(process.pid);
 	const reused = await makeOrphan({ ...owner, startTicks: String(BigInt(owner.startTicks) + 1n) });
@@ -1200,7 +1230,7 @@ test("record publication and filesystem deletion faults fail safely and remain r
 	await closed(retry, retryId); assert.equal(retry.disposals(), 1); await retry.h.cleanup();
 });
 
-test("non-rc.1 installation is rejected before agent creation", async () => {
+test("unsupported or mixed installation versions are rejected before agent creation", async () => {
 	const path = join(dirname(anchor), "node_modules", "@deepseek-ai", "dsh-agent-loop", "package.json");
 	const original = readFileSync(path, "utf8");
 	writeFileSync(path, original.replace("0.2.2-rc.1", "0.2.2-rc.2"));
@@ -1209,6 +1239,11 @@ test("non-rc.1 installation is rejected before agent creation", async () => {
 		assert.equal((await f.h.call("open", {})).ok, false);
 		assert.equal(f.creations(), 0);
 		await f.h.cleanup();
+		writeFileSync(path, original.replace("0.2.2-rc.1", "0.2.2-rc.3"));
+		const mixed = fixtureTemp();
+		assert.equal((await mixed.h.call("open", {})).ok, false);
+		assert.equal(mixed.creations(), 0);
+		await mixed.h.cleanup();
 	} finally { writeFileSync(path, original); }
 });
 

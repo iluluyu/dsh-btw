@@ -72,10 +72,13 @@ test("bindNativeRoute refuses configs it cannot merge safely", () => {
 	reason(bindNativeRoute({ get: () => loaderWith([entryWith({ backend: "json", routes: [] })]) }));
 });
 
-test("host bootstrap installs the stable effective-config hook rather than a one-shot raw edit", () => {
+test("host bootstrap leaves ordinary storage untouched if the gate cannot initialize", async () => {
 	const raw = { backend: "json" }, entry = entryWith(raw), hooks = new Map();
-	apply({ get: () => loaderWith([entry]), on(name, fn) { hooks.set(name, fn); }, plugin() {}, inject() {} });
-	assert.equal(typeof hooks.get("internal/config"), "function");
+	let childPlugin;
+	apply({ get: () => loaderWith([entry]), on(name, fn) { hooks.set(name, fn); }, plugin(plugin) { childPlugin = plugin; }, inject() {} });
+	assert.equal(hooks.size, 0, "no route is installed before the backend is ready");
+	await assert.rejects(childPlugin.apply({ profileContext: { installAnchor: "/nonexistent/package.json" } }));
+	assert.equal(hooks.size, 0, "backend initialization failure must not route normal sessions to it");
 	assert.equal(entry.options.config, raw);
 	assert.deepEqual(raw, { backend: "json" });
 });

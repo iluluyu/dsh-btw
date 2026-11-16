@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto';
 const root = await mkdtemp(join(tmpdir(), 'btw-smoke-'));
 const plugin = fileURLToPath(new URL('../lib/index.js', import.meta.url));
 let child;
+let runtimeVersion;
 let output = '';
 let failed = false;
 let interrupted = false;
@@ -207,7 +208,7 @@ async function tempRoundTrip(origin, cookie, payload, noWorkspace) {
 		assert.ok(record, 'temporary session recovery record missing before close');
 		assert.equal(record.version, 2);
 		assert.equal(record.kind, 'btw-default-jsonl-temp');
-		assert.equal(record.runtime, '0.2.2-rc.1');
+		assert.equal(record.runtime, runtimeVersion);
 		assert.ok(Number.isSafeInteger(record.owner?.pid));
 		for (const identity of [record.rootIdentity, record.projectIdentity, record.dirIdentity]) {
 			assert.match(identity?.dev, /^\d+$/);
@@ -242,8 +243,9 @@ try {
 	env.NODE_OPTIONS = `--require=${guard}`;
 	const bin = process.env.DSH_BIN || 'dsh';
 	const version = await promisify(execFile)(bin, ['--version'], { cwd: root, env, timeout: 10000 });
-	assert.match(version.stdout.trim(), /(?:^|\s)0\.2\.2-rc\.1$/, 'expected dsh 0.2.2-rc.1');
-	console.log('ok: dsh 0.2.2-rc.1');
+	runtimeVersion = version.stdout.trim();
+	assert.ok(['0.2.2-rc.1', '0.2.2-rc.3'].includes(runtimeVersion), 'expected a verified dsh version');
+	console.log(`ok: dsh ${runtimeVersion}`);
 	// Use a patch instead of pnpm: no registry access and the checkout is loaded directly.
 	const patch = join(root, 'btw.patch.yml');
 	const rel = relative(dirname(patch), plugin).replaceAll('\\', '/');
@@ -282,6 +284,9 @@ try {
 	assert.equal(exchange.status, 303, 'launch token exchange');
 	const cookie = exchange.headers.get('set-cookie')?.split(';', 1)[0];
 	assert.ok(cookie, 'missing session cookie');
+	const ordinary = await rpc(url.origin, 'api', 'session/create', { args: { request: {} } }, cookie);
+	assert.ok(ordinary.sessionId, 'ordinary session creation must remain available');
+	console.log('ok: ordinary session/create');
 	const settings = await rpc(url.origin, 'api', 'settings/describe', { args: {} }, cookie);
 	assert.ok(Array.isArray(settings.namespaces), 'settings namespaces missing');
 	console.log('ok: authenticated built-in /api');
