@@ -27,9 +27,9 @@ async function setup(config = {}, options = {}) {
 		const expand = (node) => {
 			if (Array.isArray(node)) return node.map(expand);
 			if (!node || typeof node !== "object") return node;
-			if (["BtwTempView", "BtwDockView", "BtwSettings"].includes(node.type?.name)) {
+			if (["BtwTempView", "BtwDockView", "BtwSettings", "ReasoningSelect", "VoiceInput"].includes(node.type?.name)) {
 				if (node.props.controller) viewControllers.set(node.props.controller.id, node.props.controller);
-				const child = node.type.name === "BtwTempView" ? "view:" + (node.props.dock ? "dock:" : node.props.inline ? "sidebar:" : node.props.standalone ? "global:" : "overlay:") + node.props.controller.id : node.type.name === "BtwDockView" ? "dock:" + node.props.controller.id : node.type;
+				const child = node.type.name === "BtwTempView" ? "view:" + (node.props.dock ? "dock:" : node.props.inline ? "sidebar:" : node.props.standalone ? "global:" : "overlay:") + node.props.controller.id : node.type.name === "BtwDockView" ? "dock:" + node.props.controller.id : node.props.controller ? instance + ":" + node.type.name : node.type;
 				if (!childInstances.has(instance)) childInstances.set(instance, new Set());
 				childInstances.get(instance).add(child);
 				return render(node.type, node.props, child);
@@ -43,9 +43,10 @@ async function setup(config = {}, options = {}) {
 		document: { querySelector: () => null, createElement: () => ({ dataset: {} }), head: { appendChild: (tag) => styles.push(tag.textContent) },
 			addEventListener: (type, fn) => { if (!events.has(type)) events.set(type, new Set()); events.get(type).add(fn); },
 			removeEventListener: (type, fn) => events.get(type)?.delete(fn) },
-		setInterval: options.setInterval || setInterval, clearInterval: options.clearInterval || clearInterval, setTimeout: options.setTimeout || setTimeout, clearTimeout: options.clearTimeout || clearTimeout, AbortController, TextEncoder, ResizeObserver: options.ResizeObserver, MutationObserver: options.MutationObserver, Date: options.Date || Date, requestAnimationFrame() {},
+		setInterval: options.setInterval || setInterval, clearInterval: options.clearInterval || clearInterval, setTimeout: options.setTimeout || setTimeout, clearTimeout: options.clearTimeout || clearTimeout, AbortController, TextEncoder, crypto: globalThis.crypto, ResizeObserver: options.ResizeObserver, MutationObserver: options.MutationObserver, Date: options.Date || Date, requestAnimationFrame() {},
 	};
 	Object.assign(sandbox.document, options.document);
+	Object.assign(sandbox, options.browser);
 	const loader = clientLoader(sandbox, (id) => {
 		required.push(id);
 		if (id === "react") return React;
@@ -63,18 +64,23 @@ async function setup(config = {}, options = {}) {
 	};
 	if (options.noSettings) delete ctx.configForms;
 	if (options.badSidebar) ctx.inject = () => { throw new Error("unavailable"); };
-	if (options.sidebar || options.layout || options.remote || options.workspace) ctx.inject = (deps, fn) => {
+	if (options.sidebar || options.layout || options.remote || options.workspace || options.pluginNavigation || options.locale) ctx.inject = (deps, fn) => {
 		if (deps[0] === "uiWorkspace") return options.workspace ? fn(options.workspace) : () => {};
 		if (deps[0] === "workspaces") {
 			const service = Object.hasOwn(options, "workspaces") ? options.workspaces : options.workspace?.workspaces;
 			return service ? fn({ workspaces: service }) : () => {};
 		}
 		if (deps[0] === "configForms") return fn({ configForms: ctx.configForms });
+		if (deps[0] === "locale") return options.locale ? fn({ locale: options.locale }) : () => {};
+		if (deps[0] === "pluginNavigation") return options.pluginNavigation ? fn({ pluginNavigation: options.pluginNavigation }) : () => {};
 		if (deps[0] === "remote") {
 			// Cordis activates only with all required services, and a root Remote
 			// injection does not grant access to any namespace automatically.
-			if (!options.remote || (deps.includes("remote.session") && !options.remote.session)) return () => {};
-			const remote = { get session() {
+			if (!options.remote || (deps.includes("remote.session") && !options.remote.session) || (deps.includes("remote.speech") && !options.remote.speech)) return () => {};
+			const remote = { get speech() {
+				if (!deps.includes("remote.speech")) throw new Error("Missing speech scope");
+				return options.remote.speech;
+			}, get session() {
 				if (!deps.includes("remote.session")) throw new Error('cannot get property "remote.session" without inject');
 				return options.remote.session;
 			} };
@@ -99,10 +105,12 @@ test("source-free entry uses native RPC and closes only its owned session", asyn
 	const env = await setup({}, { lazy: true, layout, workspace: { uiWorkspace, sessions, layout }, workspaces: defaultWorkspace(byId), rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : method === "nativeClose" ? { burned: true } : { providers: [] } }) });
 	env.render(env.registrations.get("conversation.header.leading")).props.onClick(); await tick();
 	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen"]);
-	const nativeStyle = env.styles.find(css => css.includes('[data-conversation-session="owned"] [data-composer-card]') && css.includes('[data-conversation-session="owned"] [data-message-bubble]'));
-	assert.match(nativeStyle, /outline:\s*1px dashed/);
-	assert.match(nativeStyle, /outline-offset:\s*-1px/);
-	assert.doesNotMatch(nativeStyle, /(?:^|[;{])\s*border\s*:/, "the temporary indicator must not change layout geometry");
+	const nativeStyle = env.styles.find(css => css.includes('[data-conversation-session="owned"] :is([data-composer-card],[data-message-bubble])::after'));
+	assert.doesNotMatch(nativeStyle, /\bbackground(?:-color)?\s*:/, "native temporary composer keeps its host background");
+	assert.match(nativeStyle, /border-radius:inherit;corner-shape:inherit;/);
+	assert.match(nativeStyle, /\[data-composer-card\]::after\{border:2px dashed var\(--btw-temp-composer-stroke\)/);
+	assert.match(nativeStyle, /\[data-message-bubble\]::after\{box-shadow:inset 0 0 0 1px var\(--btw-soft-edge\)/);
+	assert.doesNotMatch(nativeStyle, /\[data-composer-card\]\{[^}]*\bborder\s*:/, "the temporary indicator must not change layout geometry");
 	assert.equal(env.render(env.registrations.get("btw")), null, "native session has no fake composer or controls");
 	const button = env.render(env.registrations.get("btw-temp"), { sessionId: "owned" });
 	assert.equal(button.props["aria-label"], "结束临时聊天");
@@ -110,7 +118,15 @@ test("source-free entry uses native RPC and closes only its owned session", asyn
 	assert.equal(heroClose.props["aria-label"], "结束临时聊天", "blank native page must remain closable");
 	assert.equal(heroClose.props["aria-pressed"], true, "native page exposes its active temporary-chat state");
 	assert.ok(heroClose.children.includes("临时聊天"));
-	assert.equal(heroClose.children[0].props.active, true, "active badge shows a check mark");
+	const icon = entry => all(entry, n => n.type === "svg")[0];
+	const projectIcon = icon(env.render(env.registrations.get("btw-temp"), { sessionId: "source" }));
+	assert.equal(projectIcon.children.filter(Boolean).length, 1, "project BTW retains its plain bubble outline");
+	assert.doesNotMatch(JSON.stringify(projectIcon), /strokeDasharray/);
+	const badge = heroClose.children[0];
+	assert.equal(badge.props.active, true);
+	const activeIcon = env.render(badge.type, badge.props);
+	assert.equal(activeIcon.children[0].props.strokeDasharray, "2 2", "native temporary chat keeps its original dashed badge");
+	assert.equal(activeIcon.children[1].props.d, "m6.8 10 2.1 2.1 4.4-4.4");
 	heroClose.props.onClick(); await tick();
 	assert.deepEqual(calls, ["owned"], "only the owned native view is archived; no previous window is touched");
 	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"]);
@@ -155,6 +171,43 @@ test("temporary mode selected before the workspace enters on registration and ab
 	assert.deepEqual(f.navigation, [["open", "owned"], ["open", "owned"]], "the owned view is asserted back after the transient blank selection");
 	assert.equal(env.render(entry).props["aria-label"], "结束临时聊天");
 	assert.equal(env.calls.filter(call => call[1] === "nativeClose").length, 0); env.cleanup();
+});
+
+test("temporary mode opens only on explicit request and keeps the native composer even when prompt is available", async () => {
+	const f = nativeFixture(), prompts = [];
+	f.byId.blank = { blank: true, cwd: "/native/project", retainedBy: {} };
+	f.select("blank");
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f,
+		remote: { session: { prompt: async payload => { prompts.push(payload); } } },
+		rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }),
+	});
+	assert.deepEqual(env.calls, []);
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick();
+	assert.deepEqual(env.calls.map(call => call[1]), ["nativeOpen"]);
+	assert.deepEqual(f.navigation, [["open", "owned"]]);
+	assert.equal(env.render(env.registrations.get("btw-ask"), { sessionId: "owned" }), null);
+	assert.equal(env.render(entry).props["data-btw-native-status"], "");
+	assert.equal(env.render(env.registrations.get("btw-temp"), { sessionId: "owned" }).props["data-btw-native-utility"], "");
+	assert.doesNotMatch(env.styles.join(""), /dsh-btw-native-draft/);
+	assert.deepEqual(prompts, []);
+	env.cleanup();
+});
+
+test("temporary mode waits for the selected blank's workspace instead of borrowing an unrelated ready workspace", async () => {
+	const f = nativeFixture();
+	f.byId.blank = { blank: true, retainedBy: {} }; f.select("blank");
+	const old = { workspaceId: "recent", path: "/recent", sessionIds: [] };
+	const workspaces = workspaceChoices([old]);
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick();
+	assert.deepEqual(env.calls, []);
+	f.byId.blank.cwd = "/chosen";
+	workspaces.set([old, { workspaceId: "chosen", path: "/chosen", sessionIds: ["blank"] }]); await tick();
+	assert.equal(env.calls.find(c => c[1] === "nativeOpen")[2].workspaceId, "chosen");
+	assert.deepEqual(f.navigation, [["open", "owned"]]);
+	env.cleanup();
 });
 
 test("a workspace list that populates after mode start enters directly without requiring manual selection", async () => {
@@ -209,6 +262,54 @@ test("independent picker commits do not exhaust a lifetime re-assertion budget",
 	assert.equal(env.render(entry).props["aria-pressed"], true); env.cleanup();
 });
 
+test("an explicit DSH New Session navigation keeps its committed normal blank", async () => {
+	const f = nativeFixture(), clock = backgroundClock();
+	let nav;
+	f.layout.beginNavigation = () => { nav?.abort(); nav = new AbortController(); return nav.signal; };
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, ...clock, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick();
+	f.layout.beginNavigation();
+	f.byId.normal = { blank: true, cwd: "/native/project", retainedBy: {} };
+	f.uiWorkspace.openSession("normal"); await tick();
+	assert.equal(env.render(entry).props["aria-pressed"], false);
+	assert.deepEqual(f.navigation, [["open", "owned"], ["open", "normal"]]);
+	assert.equal(env.calls.filter(c => c[1] === "nativeClose").length, 1);
+	env.cleanup();
+});
+
+test("New Session exits to a fresh normal blank if DSH reuses the active temporary blank", async () => {
+	const f = nativeFixture(), clock = backgroundClock();
+	let nav;
+	f.layout.beginNavigation = () => { nav?.abort(); nav = new AbortController(); return nav.signal; };
+	const openSession = f.uiWorkspace.openSession;
+	f.uiWorkspace.openSession = id => {
+		if (f.byId[id]?.retainedBy.mainView === 1) {
+			f.byId[id].retainedBy.mainView = 2;
+			f.notify(); // DSH retains the replacement before releasing the old reference.
+		}
+		openSession(id);
+		nav?.abort(); // DSH reveal calls layout.selectPanel(null).
+	};
+	f.sessions.create = async ({ workspaceId }) => {
+		assert.equal(workspaceId, "workspace-one");
+		f.byId.normal = { blank: true, cwd: "/native/project", retainedBy: {} };
+		return "normal";
+	};
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, ...clock, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick();
+	f.layout.beginNavigation();
+	await tick(); clock.flush(); await tick();
+	assert.equal(env.render(entry).props["aria-pressed"], true, "navigation start alone never closes the view");
+	assert.equal(clock.size(), 0, "reuse detection is not deadline-based");
+	f.uiWorkspace.openSession("owned"); await tick(); await tick();
+	assert.equal(env.render(entry).props["aria-pressed"], false);
+	assert.deepEqual(f.navigation, [["open", "owned"], ["open", "owned"], ["open", "normal"]]);
+	assert.equal(env.calls.filter(c => c[1] === "nativeClose").length, 1);
+	env.cleanup();
+});
+
 test("a host that keeps forcing the same known blank stops re-asserting and exits temporary mode cleanly", async () => {
 	const f = nativeFixture(), workspaces = workspaceChoices([{ workspaceId: "w", path: "/w", createdAt: "2026-01-01T00:00:00Z", sessionIds: [] }]);
 	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned" } : { burned: true } }) });
@@ -257,18 +358,27 @@ test("choosing a different workspace during native creation keeps temporary mode
 	assert.equal(env.render(entry).props["aria-label"], "结束临时聊天", "late cleanup cannot turn off the new native conversation"); env.cleanup();
 });
 
-test("an active temporary conversation follows a newly chosen native workspace without showing background removal", async () => {
-	const f = nativeFixture(), oldBurn = deferred();
+test("an active temporary conversation follows a workspace picker navigation without showing background removal", async () => {
+	const f = nativeFixture(), oldBurn = deferred(), clock = backgroundClock();
+	let nav;
+	f.layout.beginNavigation = () => { nav?.abort(); nav = new AbortController(); return nav.signal; };
 	const a = { workspaceId: "a", createdAt: "2026-01-01T00:00:00Z", sessionIds: [] };
 	const b = { workspaceId: "b", createdAt: "2026-01-02T00:00:00Z", sessionIds: ["blank-b"] };
 	const workspaces = workspaceChoices([a]);
-	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces, rpc: (method, payload) => method === "nativeOpen"
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, workspaces, ...clock, rpc: (method, payload) => method === "nativeOpen"
 		? { ok: true, value: { sessionId: "owned-" + payload.workspaceId } }
 		: payload.sessionId === "owned-a" ? oldBurn.promise : { ok: true, value: { burned: true } } });
 	const entry = env.registrations.get("conversation.header.leading");
 	env.render(entry).props.onClick(); await tick();
+	f.layout.beginNavigation();
+	await tick(); clock.flush(); await tick();
+	assert.deepEqual(f.navigation, [["open", "owned-a"]], "slow picker keeps the owned view until DSH commits");
+	assert.equal(env.render(entry).props["aria-pressed"], true);
 	f.byId["blank-b"] = { blank: true, updatedAt: 2, retainedBy: {} };
-	workspaces.set([a, b]); f.select("blank-b"); await tick(); await tick();
+	f.select("blank-b"); await tick(); clock.flush(); await tick();
+	assert.deepEqual(f.navigation, [["open", "owned-a"]], "an unassigned selection waits for its workspace projection");
+	assert.equal(env.render(entry).props["aria-pressed"], true);
+	workspaces.set([a, b]); await tick(); await tick();
 	assert.deepEqual(f.navigation, [["open", "owned-a"], ["open", "owned-b"]]);
 	assert.equal(env.render(entry).props["aria-pressed"], true);
 	assert.equal(env.render(env.registrations.get("btw")), null);
@@ -634,14 +744,20 @@ test("native navigation away removes records in the background and retries witho
 	assert.deepEqual(f.navigation, [["open", "owned"]]); assert.equal(f.byId.other.retainedBy.mainView, 1);
 	assert.equal(attempts, 2); env.cleanup();
 });
-test("unsupported native creation stops after bounded retries without an error popup or fake temporary conversation", async () => {
+test("native creation failure stays on the current page and retries only on click", async () => {
 	const f = nativeFixture(), clock = backgroundClock(), warnings = [];
 	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, ...clock, console: { warn: (...args) => warnings.push(args) }, rpc: () => ({ ok: false, error: { message: "unknown method: nativeOpen" } }) });
 	const entry = env.registrations.get("conversation.header.leading");
 	env.render(entry).props.onClick(); await tick();
 	for (let i = 0; i < 3; i++) { clock.flush(); await tick(); }
-	assert.equal(env.calls.length, 4); assert.equal(clock.size(), 0);
-	assert.equal(warnings.length, 1); assert.equal(env.render(entry).props["aria-pressed"], false);
+	assert.equal(env.calls.length, 1); assert.equal(clock.size(), 0);
+	assert.equal(warnings.length, 1);
+	const error = env.render(entry);
+	assert.equal(all(error, n => n.props.role === "status")[0].props.title, "unknown method: nativeOpen");
+	button(error, "重试").props.onClick(); await tick();
+	assert.equal(env.calls.length, 2);
+	button(env.render(entry), "取消").props.onClick();
+	assert.equal(env.render(entry).props["aria-pressed"], false);
 	assert.equal(env.render(env.registrations.get("btw")), null);
 	assert.deepEqual(f.navigation, []); env.cleanup();
 });
@@ -734,7 +850,7 @@ test("pending workspace discovery keeps temporary mode armed without using stale
 	assert.deepEqual(env.calls, []); assert.equal(env.render(entry).props["aria-pressed"], true);
 	assert.equal(env.render(env.registrations.get("btw")), null); env.cleanup();
 });
-test("catalog refresh and record removal retry independently without surfacing errors or losing the returned native owner", async () => {
+test("catalog failure needs explicit retry while record removal retries independently", async () => {
 	const f = nativeFixture(), clock = backgroundClock(); let opens = 0, burns = 0, refreshes = 0;
 	f.sessions.refresh = async () => { if (++refreshes === 1) throw new Error("目录刷新失败"); };
 	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, ...clock, rpc: method => ({ ok: true, value: method === "nativeOpen" ? { sessionId: "owned-" + ++opens } : ++burns === 1 ? {} : { burned: true } }) });
@@ -742,7 +858,9 @@ test("catalog refresh and record removal retry independently without surfacing e
 	env.render(entry).props.onClick(); await tick(); await tick();
 	assert.equal(burns, 1); assert.equal(env.render(env.registrations.get("btw")), null);
 	clock.flush(); await tick(); await tick();
-	assert.equal(opens, 2); assert.equal(burns, 2);
+	assert.equal(opens, 1); assert.equal(burns, 2);
+	button(env.render(entry), "重试").props.onClick(); await tick();
+	assert.equal(opens, 2);
 	assert.deepEqual(f.navigation, [["open", "owned-2"]]);
 	assert.equal(env.render(entry).props["aria-label"], "结束临时聊天"); env.cleanup();
 });
@@ -816,7 +934,7 @@ function modelTree(env, tree, instance = "model") {
 	return env.render(node.type, node.props, instance);
 }
 function nativeMenu(env, tree, label, instance = label) {
-	const node = all(tree, (n) => n.type?.name === "ChoiceMenu" && n.props.label === label)[0];
+	const node = all(tree, (n) => n.type?.name === "ChoiceMenu" && n.props.label === label || label === "模型" && n.type?.name === "ComposerModelMenu")[0];
 	assert.ok(node, "shared picker for " + label);
 	const menu = env.render(node.type, node.props, instance);
 	assert.equal(menu.type, NativeMenu);
@@ -829,13 +947,15 @@ test("missing or incomplete shared modules preserve editable native model and co
 		const component = env.registrations.get("dsh-btw#btw")({}).type;
 		env.render(component); await tick(); // First settings visit lazy-loads the settings sibling chunk.
 		const tree = env.render(component);
-		const context = all(tree, (n) => n.type === "select" && n.props["aria-label"] === "侧问默认上下文")[0];
+		const context = all(tree, (n) => n.type === "select" && n.props["aria-label"] === "上下文")[0];
 		context.props.onChange({ target: { value: "all" } }); await tick();
 		assert.deepEqual(env.writes[0], ["askContextMode", "all"]);
+		assert.deepEqual(env.writes[1], ["tempContextMode", "all"]);
 		const model = modelTree(env, tree);
 		const select = all(model, (n) => n.type === "select")[0];
 		select.props.onChange({ target: { value: '["p","m"]' } }); await tick();
-		assert.equal(env.writes[1].at(-1).value, "custom");
+		assert.equal(env.writes[2].at(-1).value, "custom");
+		assert.equal(env.writes[3].at(-1).value, "custom");
 		assert.ok(env.required.includes("@deepseek-ai/dsh-client-ui-primitives"));
 		assert.equal(env.calls.some((c) => /selectModel/.test(c[1])), false);
 		env.cleanup();
@@ -878,9 +998,9 @@ test("shared Menu uses native portal, focus and navigation contract; settings sa
 	]);
 	tree = env.render(settings); model = modelTree(env, tree);
 	assert.match(nativeMenu(env, model, "模型").props.anchor.props["aria-label"], /p \/ Model/);
-	menu = nativeMenu(env, tree, "侧问默认上下文");
+	menu = nativeMenu(env, tree, "上下文");
 	menu.props.onSelect("on-demand"); await tick();
-	assert.deepEqual(env.writes.at(-1), ["askContextMode", "on-demand"]);
+	assert.deepEqual(env.writes.slice(-2), [["askContextMode", "on-demand"], ["tempContextMode", "on-demand"]]);
 	const css = env.styles.join("");
 	assert.match(css, /dsh-btw-picker-menu\[data-menu-material\]\{z-index:9010;max-width:min\(360px,calc\(100vw - 24px\)/);
 	assert.match(css, /var\(--dsw-alias-label-secondary/); // Theme tokens, not a light-only popup.
@@ -915,13 +1035,15 @@ test("shared temporary selectors send only btw choices, lock on first send, and 
 	const overlay = env.registrations.get("btw"); let tree = env.render(overlay);
 	let model = modelTree(env, tree), menu = nativeMenu(env, model, "模型");
 	assert.equal(menu.props.portal, true, "native menu must escape the clipped modal");
-	assert.equal(menu.props.listClassName, "dsh-btw-picker-menu");
+	assert.equal(menu.props.listClassName, "dsh-btw-picker-menu dsh-btw-model-menu");
 	const css = env.styles.join("");
 	const menuLayer = Number(css.match(/\.dsh-btw-picker-menu\[data-menu-material\]\{z-index:(\d+)/)[1]);
 	const modalLayer = Number(css.match(/\.dsh-btw-desktop\{[^}]*z-index:(\d+)/)[1]);
 	assert.ok(menuLayer > modalLayer, "the portaled menu layer must sit above the modal veil");
 	menu.props.anchor.props.onClick(); menu = nativeMenu(env, model, "模型");
 	assert.equal(menu.props.open, true);
+	menu.props.onSelect("model");
+	menu = nativeMenu(env, model, "模型");
 	menu.props.onSelect('["p","m"]'); // Native portaled row click forwards to this callback.
 	assert.equal(nativeMenu(env, model, "模型").props.open, false);
 	let context = nativeMenu(env, tree, "临时聊天上下文"); context.props.onSelect("recent");
@@ -945,9 +1067,9 @@ test("shared temporary selectors send only btw choices, lock on first send, and 
 		assert.equal(picker.props.anchor.props.disabled, true); assert.equal(picker.props.open, false);
 		picker.props.anchor.props.onClick(); picker.props.onSelect("host");
 	}
-	assert.equal(menu.props.selectedId, '["p","m"]'); assert.equal(context.props.selectedId, "recent");
+	assert.match(menu.props.anchor.props["aria-label"], /模型：m/); assert.equal(context.props.selectedId, "recent");
 	assert.equal(env.writes.length, 0);
-	assert.ok(env.calls.every((c) => c[0] === "/btw" && ["models", "open"].includes(c[1])));
+	assert.ok(env.calls.every((c) => c[0] === "/btw" && ["models", "modelOptions", "open"].includes(c[1])));
 	opened.resolve({ ok: true, value: { sessionId: "tmp", cwd: null } }); await tick(); await tick();
 	tree = env.render(overlay);
 	assert.equal(nativeMenu(env, modelTree(env, tree), "模型").props.anchor.props.disabled, true);
@@ -961,7 +1083,10 @@ test("shared ask menus preserve local model/context choices and disable while as
 	await tick(); env.render(env.registrations.get("btw-trigger")).props.onClick();
 	const ask = env.registrations.get("btw-ask"), props = chatProps("origin");
 	let tree = env.render(ask, props);
-	nativeMenu(env, modelTree(env, tree), "模型").props.onSelect('["p","m"]');
+	const model = modelTree(env, tree);
+	nativeMenu(env, model, "模型").props.anchor.props.onClick();
+	nativeMenu(env, model, "模型").props.onSelect("model");
+	nativeMenu(env, model, "模型").props.onSelect('["p","m"]');
 	nativeMenu(env, tree, "侧问上下文").props.onSelect("none");
 	all(tree, (n) => n.type === "textarea")[0].props.onChange({ target: { value: "question" } });
 	tree = env.render(ask, props); all(tree, (n) => n.props["aria-label"] === "提问")[0].props.onClick();
@@ -980,7 +1105,7 @@ test("shared ask menus preserve local model/context choices and disable while as
 test("shared settings selectors stay disabled when the form service is missing", async () => {
 	const env = await setup({}, { primitives: sharedPrimitives, effects: true, noSettings: true }); await tick();
 	const tree = env.render(env.registrations.get("dsh-btw#btw")({}).type);
-	for (const menu of [nativeMenu(env, modelTree(env, tree), "模型"), nativeMenu(env, tree, "侧问默认上下文")]) {
+	for (const menu of [nativeMenu(env, modelTree(env, tree), "模型"), nativeMenu(env, tree, "上下文")]) {
 		assert.equal(menu.props.anchor.props.disabled, true);
 		menu.props.anchor.props.onClick(); menu.props.onSelect("current");
 	}
@@ -991,7 +1116,10 @@ test("shared project temporary model menu never offers current-session resolutio
 	const env = await setup({ tempModelMode: "current", tempContextMode: "all" }, { primitives: sharedPrimitives }); await tick();
 	env.render(env.registrations.get("btw-temp"), { sessionId: "origin" }).props.onClick();
 	const tree = env.render(env.registrations.get("btw"));
-	const menu = nativeMenu(env, modelTree(env, tree), "模型");
+	const model = modelTree(env, tree);
+	nativeMenu(env, model, "模型").props.anchor.props.onClick();
+	nativeMenu(env, model, "模型").props.onSelect("model");
+	const menu = nativeMenu(env, model, "模型");
 	assert.equal(menu.props.selectedId, "default");
 	assert.equal(menu.props.items.some((item) => item.id === "current"), false);
 	assert.ok(all(tree, (n) => n.props.label === "临时聊天上下文").length); env.cleanup();
@@ -1001,7 +1129,7 @@ test("settings writes toggle and selected model through form scope", async () =>
 	const env = await setup(); await tick();
 	const wrapper = env.registrations.get("dsh-btw#btw")({});
 	const tree = env.render(wrapper.type);
-	const checkbox = all(tree, (n) => n.type === "input" && n.props["aria-label"] === "显示侧问按钮")[0];
+	const checkbox = all(tree, (n) => n.type === "input" && n.props["aria-label"] === "输入框「顺便问」按钮")[0];
 	checkbox.props.onChange({ target: { checked: false } }); await tick();
 	assert.deepEqual(env.writes[0], ["showAskChip", false]);
 	assert.equal(env.render(env.registrations.get("btw-trigger")), null);
@@ -1074,7 +1202,7 @@ test("settings sibling chunk loads only on a settings visit, dedupes, and never 
 	assert.equal(env.requests.filter((file) => file === "client.settings.js").length, 1, "one lazy request");
 	tree = env.render(settings);
 	assert.equal(tree.props.className, "dsh-btw-settings");
-	assert.equal(all(tree, (n) => n.props["aria-label"] === "侧问默认上下文").length, 1);
+	assert.equal(all(tree, (n) => n.props["aria-label"] === "上下文").length, 1);
 	assert.ok(env.styles.some((css) => css.includes("dsh-btw-settings")), "settings CSS injected under its own id");
 	env.render(settings); await tick();
 	assert.equal(env.requests.filter((file) => file === "client.settings.js").length, 1, "repeated visits dedupe the load");
@@ -1171,11 +1299,24 @@ test("optional services do not prevent activation", async () => {
 	assert.ok(env.registrations.has("btw"));
 });
 
-test("visibility switches hide both global and session entries", async () => {
+test("the native temporary chat switch is independent of the conversation header and keeps the active exit", async () => {
 	const env = await setup({ showAskChip: false, showTempEntry: false });
+	const globalEntry = env.registrations.get("conversation.header.leading"), header = env.registrations.get("btw-temp");
 	assert.equal(env.render(env.registrations.get("btw-trigger")), null);
-	assert.equal(env.render(env.registrations.get("conversation.header.leading")), null);
-	assert.equal(env.render(env.registrations.get("btw-temp")), null);
+	assert.equal(env.render(header, { sessionId: "origin" }), null);
+	const opening = env.render(globalEntry);
+	assert.equal(opening.props["aria-label"], "开启全局临时聊天", "native entry defaults to on");
+	opening.props.onClick();
+	const card = env.render(env.registrations.get("dsh-btw#btw")({}).type);
+	const toggle = label => all(card, n => n.type === "input" && n.props["aria-label"] === label)[0];
+	toggle("临时聊天").props.onChange({ target: { checked: false } }); await tick();
+	const exit = env.render(globalEntry);
+	assert.equal(exit.props["aria-label"], "结束临时聊天");
+	exit.props.onClick();
+	toggle("右上角入口").props.onChange({ target: { checked: true } }); await tick();
+	assert.equal(env.render(globalEntry), null);
+	assert.equal(env.render(header, { sessionId: "origin" }).props["aria-label"], "顺便问");
+	env.cleanup();
 });
 
 test("first send opens with chosen context and model, then locks controls", async () => {
@@ -1200,7 +1341,126 @@ test("first send opens with chosen context and model, then locks controls", asyn
 	assert.equal(all(env.render(overlay), (n) => n.props["aria-label"] === "临时聊天上下文")[0].props.disabled, true);
 });
 
-test("temporary on-demand sends snapshot and controls follow model-context-send order", async () => {
+test("native model menu drills into strength and keeps one composer trigger", async () => {
+	const env = await setup({}, { primitives: sharedPrimitives, rpc: (method) => ({
+		ok: true, value: method === "models" ? { providers: [] } : method === "modelOptions" ? {
+			reasoning: { efforts: [{ id: "medium", name: "Medium" }, { id: "high", name: "High" }, { id: "max", name: "Max" }], defaultEffort: "max" }, selectedEffort: "max",
+		} : {},
+	}) });
+	env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
+	const overlay = env.registrations.get("btw"), view = () => env.render(overlay);
+	const menu = () => nativeMenu(env, modelTree(env, view()), "模型");
+	assert.equal(all(view(), n => n.props["aria-label"] === "推理强度").length, 0);
+	menu().props.anchor.props.onClick(); await tick();
+	assert.deepEqual(Array.from(menu().props.items, item => item.id), ["model", "effort"]);
+	assert.equal(menu().props.anchor.props["aria-label"], "模型：默认");
+	assert.doesNotMatch(JSON.stringify(menu().props.items), /Max/);
+	menu().props.onSelect("effort");
+	assert.equal(menu().props.selectedId, "effort:");
+	assert.deepEqual(Array.from(menu().props.items, item => item.id), ["back", "effort:", "effort:medium", "effort:high", "effort:max"]);
+	menu().props.onSelect("effort:high");
+	assert.match(menu().props.anchor.props["aria-label"], /默认 · High/);
+	assert.equal(menu().props.open, false);
+	menu().props.anchor.props.onClick();
+	menu().props.onSelect("effort");
+	menu().props.onSelect("effort:");
+	assert.equal(menu().props.anchor.props["aria-label"], "模型：默认");
+	assert.deepEqual(env.writes, []);
+	env.cleanup();
+});
+
+test("reasoning levels come from the selected route and overrides stay on the new BTW", async () => {
+	const env = await setup({}, { rpc(method) {
+		if (method === "models") return { ok: true, value: { providers: [{ id: "p", models: [{ id: "m", name: "Model" }] }] } };
+		if (method === "modelOptions") return { ok: true, value: { reasoning: { efforts: [{ id: "high", name: "High" }] }, selectedEffort: "high" } };
+		return { ok: true, value: method === "open" ? { sessionId: "owned" } : method === "send" ? { output: "ok" } : {} };
+	} });
+	env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
+	const overlay = env.registrations.get("btw");
+	button(env.render(overlay), "推理强度").props.onClick(); await tick();
+	let tree = env.render(overlay);
+	const select = all(tree, n => n.type === "select" && n.props["aria-label"] === "推理强度")[0];
+	assert.equal(select.props.value, "");
+	assert.equal(select.children[0].children[0], "默认强度");
+	select.props.onChange({ target: { value: "high" } });
+	const model = all(tree, n => n.type?.name === "ModelSelect")[0];
+	model.props.onChange('["p","m"]');
+	tree = env.render(overlay);
+	button(tree, "推理强度").props.onClick(); await tick(); tree = env.render(overlay);
+	assert.equal(all(tree, n => n.type === "select" && n.props["aria-label"] === "推理强度")[0].props.value, "", "switching model clears the previous effort override");
+	all(tree, n => n.type === "select" && n.props["aria-label"] === "推理强度")[0].props.onChange({ target: { value: "high" } });
+	button(typeTemp(env, overlay, "just this BTW"), "发送").props.onClick(); await tick();
+	const requests = env.calls.filter(c => c[1] === "modelOptions").map(c => JSON.parse(JSON.stringify(c[2])));
+	assert.deepEqual(requests, [{ modelMode: "current", parentSessionId: "origin" }, { modelMode: "custom", model: { provider: "p", model: "m" }, parentSessionId: "origin" }]);
+	assert.equal(env.calls.find(c => c[1] === "open")[2].reasoningEffort, "high");
+	assert.deepEqual(env.writes, []);
+	env.cleanup();
+});
+
+test("unprepared voice uses DSH Modal and the real plugin details action without recording", async () => {
+	function Modal() {}
+	const bundles = [];
+	let phase = "unprepared", mic = 0;
+	const browser = { MediaRecorder: class {}, AudioContext: class {}, OfflineAudioContext: class {},
+		navigator: { mediaDevices: { getUserMedia() { mic++; } } } };
+	const env = await setup({}, { primitives: { Modal }, browser, pluginNavigation: { openBundle: id => bundles.push(id) },
+		locale: { bind(ns) { assert.equal(ns, "voice-input"); return key => key === "setupPrompt.later" ? "DSH Later" : key; } },
+		remote: { speech: { catalog: async () => ({ ok: true, value: { selection: { providerId: "local" },
+			providers: [{ id: "local", location: "host-local", preparation: { phase } }] } }) } } });
+	env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
+	const view = () => env.render(env.registrations.get("btw"));
+	const modal = () => all(view(), n => n.type === Modal)[0];
+	button(view(), "语音输入").props.onClick(); await tick();
+	assert.equal(modal().props.title, "使用语音输入前需要安装");
+	assert.equal(modal().props.footer[0].children[0], "DSH Later");
+	assert.equal(modal().props.footer[1].children[0], "前往安装");
+	modal().props.footer[1].props.onClick();
+	assert.equal(modal(), undefined);
+	assert.deepEqual(bundles, ["@deepseek-ai/dsh-experimental-voice-input-bundle"]);
+	phase = "downloading";
+	button(view(), "语音输入").props.onClick(); await tick();
+	assert.equal(modal().props.title, "语音识别尚未就绪");
+	assert.equal(modal().props.footer[1].children[0], "前往语音插件设置");
+	assert.equal(mic, 0);
+	env.cleanup();
+});
+
+test("voice uses the DSH provider and only inserts into the BTW draft", async () => {
+	let recorder, stopped = 0, audio, opened = 0;
+	class MediaRecorder {
+		constructor() { recorder = this; this.state = "inactive"; this.mimeType = "audio/webm"; }
+		start() { this.state = "recording"; }
+		stop() { this.state = "inactive"; void this.onstop?.(); }
+	}
+	class AudioContext {
+		async decodeAudioData() { return { duration: 0.002 }; }
+		async close() {}
+	}
+	class OfflineAudioContext {
+		createBufferSource() { return { connect() {}, start() {} }; }
+		async startRendering() { return { getChannelData: () => new Float32Array([0, .1, -.2]) }; }
+	}
+	const remote = { speech: {
+		async catalog() { return { ok: true, value: { providers: [{ id: "local", preparation: { phase: "ready" } }], selection: { providerId: "local", language: "auto" }, maxAudioBytes: 1024, maxDurationSeconds: 2 } }; },
+		async transcribe(request) { audio = request; return { ok: true, value: { text: "voice note" } }; },
+	} };
+	const browser = { MediaRecorder, AudioContext, OfflineAudioContext, Blob, btoa, navigator: { mediaDevices: { async getUserMedia() { opened++; return { getTracks: () => [{ stop: () => { stopped++; } }] }; } } } };
+	const env = await setup({}, { remote, browser, commitRef: n => n.type === "textarea" ? { selectionEnd: 3, focus() {} } : null });
+	env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
+	const overlay = env.registrations.get("btw");
+	button(typeTemp(env, overlay, "btw draft"), "语音输入").props.onClick(); await tick();
+	recorder.ondataavailable({ data: new Blob(["fixture"]) });
+	button(env.render(overlay), "结束录音并转录").props.onClick(); await tick(); await tick();
+	assert.equal(all(env.render(overlay), n => n.type === "textarea")[0].props.value, "btw voice note draft");
+	assert.equal(audio.providerId, "local"); assert.equal(audio.language, "auto");
+	const wav = Buffer.from(audio.audioBase64, "base64");
+	assert.equal(wav.subarray(0, 4).toString(), "RIFF"); assert.equal(wav.readUInt32LE(24), 16000);
+	assert.equal(env.calls.filter(c => c[1] === "send" || c[1] === "open").length, 0);
+	assert.equal(opened, 1); assert.ok(stopped);
+	env.cleanup();
+});
+
+test("temporary on-demand sends snapshot and controls follow context-model-send order", async () => {
 
 
 	const env = await setup({}, { rpc: (method) => ({ ok: true, value: method === "models" ? { providers: [] } : method === "open" ? { sessionId: "temp", cwd: null } : method === "send" ? { output: "ok" } : { text: "", lastSeq: 0 } }) });
@@ -1213,9 +1473,9 @@ test("temporary on-demand sends snapshot and controls follow model-context-send 
 	env.render(env.registrations.get("btw-temp"), { sessionId: "origin" }).props.onClick();
 	const overlay = env.registrations.get("btw"); let tree = env.render(overlay);
 	const tools = all(tree, (n) => n.props.className === "dsh-btw-tools")[0];
-	assert.equal(typeof tools.children[0].type, "function");
-	assert.equal(all(tools.children[1], (n) => n.props["aria-label"] === "临时聊天上下文").length, 1);
-	assert.equal(tools.children[2].props["aria-label"], "发送");
+	assert.equal(all(tools.children[0], (n) => n.props["aria-label"] === "临时聊天上下文").length, 1);
+	assert.equal(typeof tools.children[1].type, "function");
+	assert.equal(tools.children.at(-1).props["aria-label"], "发送");
 	all(tree, (n) => n.props["aria-label"] === "临时聊天上下文")[0].props.onChange({ target: { value: "on-demand" } });
 	all(tree, (n) => n.type === "textarea")[0].props.onChange({ target: { value: "hello" } });
 	tree = env.render(overlay); all(tree, (n) => n.props["aria-label"] === "发送")[0].props.onClick(); await tick(); await tick();
@@ -1232,8 +1492,9 @@ test("standalone legacy view retains shared child transport and waits for close"
 	assert.ok(!env.registrations.has("btw-temp-global"));
 	assert.ok(env.registrations.has("conversation.header.leading"));
 	// Exercise the existing standalone view directly; the new header entry is native.
-	assert.match(env.styles.join(""), /\.dsh-btw-standalone \[data-global=true\] \.dsh-btw-mcard\{border-style:dashed/);
-	assert.match(env.styles.join(""), /\.dsh-btw-standalone \[data-global=true\] \.dsh-btw-msg\.user \.dsh-btw-bubble\{border:1px dashed/);
+	assert.doesNotMatch(env.styles.join(""), /\.dsh-btw-standalone \[data-global=true\] \.dsh-btw-mcard\{[^}]*\bbackground(?:-color)?\s*:/);
+	assert.match(env.styles.join(""), /\.dsh-btw-standalone \[data-global=true\] \.dsh-btw-mcard::after\{[^}]*border:2px dashed/);
+	assert.match(env.styles.join(""), /\.dsh-btw-standalone \[data-global=true\] \.dsh-btw-msg\.user \.dsh-btw-bubble\{box-shadow:inset 0 0 0 1px var\(--btw-soft-edge\)/);
 	const panel = env.registrations.get("dsh-btw-global");
 	let view = env.render(panel); view = env.render(panel);
 	const overlay = view.type, props = view.props;
@@ -1260,7 +1521,7 @@ test("standalone legacy view retains shared child transport and waits for close"
 	assert.deepEqual(env.calls.filter((c) => c[1] === "send").map((c) => [c[2].sessionId, c[2].text]), [["global", "hi"], ["global", "second turn"]]);
 	tree = env.render(overlay, props);
 	assert.deepEqual(all(tree, isMessageContent).map((n) => n.children[0]), ["hi", "ok", "second turn", "ok"]);
-	assert.equal(all(tree, (n) => n.type === "button" && n.children.includes("选择消息")).length, 0);
+	assert.equal(all(tree, (n) => n.type === "button" && n.props["aria-label"] === "选择消息").length, 0);
 	assert.equal(all(tree, (n) => n.type === "input" && n.props.type === "checkbox").length, 0);
 	assert.equal(all(tree, (n) => n.props.className === "dsh-btw-msub")[0].children[0], "", "settled headers do not repeat lifecycle instructions");
 	all(tree, (n) => n.type === "button" && n.props["aria-label"] === "结束临时聊天")[0].props.onClick();
@@ -1288,7 +1549,9 @@ async function historyFixture(records, extra = {}) {
 	const component = env.registrations.get("btw-ask"), props = chatProps("origin", [{ kind: "user", content: [{ type: "text", text: "projection must not be sent" }] }]);
 	const submit = () => {
 		const existing = env.render(component, props);
-		if (existing && all(existing, isMessageContent).length) modeControl(existing, "overlay").props.onClick();
+		if (existing && all(existing, isMessageContent).length) {
+			button(existing, "关闭侧问面板").props.onClick();
+		}
 		if (!env.render(component, props)) env.render(env.registrations.get("btw-trigger")).props.onClick();
 		let tree = env.render(component, props);
 		all(tree, (n) => n.type === "textarea")[0].props.onChange({ target: { value: "question" } });
@@ -1355,10 +1618,10 @@ test("all cache confirms head, reuses same cut and prefix, expires and clears on
 	env.cleanup();
 });
 
-test("all shares concurrent fixed/float child reads without mutating the main session", async () => {
+test("all shares concurrent child reads after a window move and explicit New without mutating the main session", async () => {
 	const records = Array.from({ length: 12 }, (_, i) => record(i));
 	const env = await historyFixture(records); await tick(); env.submit();
-	env.render(env.registrations.get("btw-temp"), { sessionId: "origin" }).props.onClick();
+	modeControl(env.render(env.component, env.props), "overlay").props.onClick();
 	const overlay = env.registrations.get("btw");
 	button(env.render(overlay), "新建临时聊天").props.onClick();
 	button(typeTemp(env, overlay, "temp"), "发送").props.onClick();
@@ -1398,8 +1661,8 @@ test("all cancels one merged consumer without cancelling the other", async () =>
 	let release;
 	const env = await historyFixture([], { events: () => new Promise(resolve => { release = resolve; }) });
 	await tick(); env.submit();
-	const closeFixed = button(env.render(env.component, env.props), "关闭侧问面板");
-	env.render(env.registrations.get("btw-temp"), { sessionId: "origin" }).props.onClick();
+	modeControl(env.render(env.component, env.props), "overlay").props.onClick();
+	const closeFixed = button(env.render(env.registrations.get("btw")), "结束临时聊天");
 	const overlay = env.registrations.get("btw");
 	button(env.render(overlay), "新建临时聊天").props.onClick();
 	button(typeTemp(env, overlay, "temp"), "发送").props.onClick();
@@ -1433,7 +1696,7 @@ test("all cancels on connection replacement, disconnect and explicit close", asy
 	}
 });
 
-async function tempFixture() {
+async function tempFixture(extra = {}) {
 	let mounted = "origin", reject = false, draft = "original @reference", captured, insertions = 0;
 	let expanded = true, collapses = 0;
 	const sidebar = {
@@ -1444,6 +1707,7 @@ async function tempFixture() {
 		hide: () => assert.fail("hide can close floating tabs; collapse the column instead"),
 	};
 	const options = { effects: true, sidebar, rpc: (method) => ({ ok: true, value: method === "models" ? { providers: [] } : method === "open" ? { sessionId: "temp", cwd: "/tmp" } : method === "send" ? { output: "answer" } : method === "poll" ? { text: "", lastSeq: 0 } : {} }) };
+	Object.assign(options, extra);
 	const env = await setup({}, options);
 	const actions = {
 		captureInsertion: () => { captured = { start: 0, end: 8, draftRev: 4 }; return captured; },
@@ -1452,14 +1716,9 @@ async function tempFixture() {
 	env.render(env.registrations.get("btw-ask"), { sessionId: "origin", inputActions: actions });
 	return { ...env, options, sidebarState: () => ({ expanded, collapses }), setMounted: (v) => { mounted = v; }, setReject: (v) => { reject = v; }, getDraft: () => draft, getInsertions: () => insertions };
 }
-// Internal transition fixture for lifecycle tests: inline UI deliberately has no mode controls.
 function switchHeaderSidebarToOverlay(env) {
-	const overlay = env.registrations.get("btw"), pane = env.render(overlay, { inline: true });
-	if (pane) {
-		assert.equal(all(pane, n => n.props["data-btw-mode"]).length, 0);
-		const id = all(pane, n => n.props["data-chat-id"])[0].props["data-chat-id"];
-		env.viewControllers.get(id).showOverlay();
-	}
+	const pane = env.render(env.registrations.get("btw"), { inline: true });
+	if (pane) modeControl(pane, "overlay").props.onClick();
 }
 async function startAndSelect(env) {
 	env.render(env.registrations.get("btw-temp"), { sessionId: "origin" }).props.onClick(); await tick();
@@ -1470,7 +1729,7 @@ async function startAndSelect(env) {
 	tree = env.render(overlay);
 	all(tree, (n) => n.props["aria-label"] === "发送")[0].props.onClick(); await tick(); await tick();
 	tree = env.render(overlay);
-	all(tree, (n) => n.type === "button" && n.children.includes("选择消息"))[0].props.onClick();
+	all(tree, (n) => n.type === "button" && n.props["aria-label"] === "选择消息")[0].props.onClick();
 	tree = env.render(overlay);
 	all(tree, (n) => n.type === "input" && n.props.type === "checkbox")[0].props.onChange();
 	return overlay;
@@ -1662,7 +1921,7 @@ test("temporary polls are serial, fence late deltas and keep a monotone cursor a
 	assert.deepEqual(bubbles.map((n) => n.children[0]), ["first", "AB", "second", "C"]); env.cleanup();
 });
 
-test("sidebar and popup share a live conversation; popup and header restoration collapse without closing tabs", async () => {
+test("sidebar and popup share a live conversation; header reuses the current position without closing tabs", async () => {
 	const env = await tempFixture(); const overlay = await startAndSelect(env);
 	assert.equal(env.options.definition.kind, "btw-temp");
 	assert.deepEqual(env.sidebarState(), { expanded: false, collapses: 1 }, "explicit small-window switch collapses the sidebar");
@@ -1692,9 +1951,7 @@ test("sidebar and popup share a live conversation; popup and header restoration 
 	assert.deepEqual(env.sidebarState(), { expanded: false, collapses: 3 });
 
 	env.render(env.registrations.get("btw-temp"), { sessionId: "origin" }).props.onClick();
-	assert.equal(env.sidebarState().expanded, true, "header reactivates the sidebar");
-	switchHeaderSidebarToOverlay(env);
-	assert.equal(env.sidebarState().collapses, 4);
+	assert.deepEqual(env.sidebarState(), { expanded: false, collapses: 3 }, "header resumes the already floating chat without moving it");
 	tree = env.render(overlay);
 	assert.deepEqual(all(tree, isMessageContent).map((n) => n.children[0]), ["hello", "answer"]);
 	assert.equal(all(tree, (n) => n.type === "input" && n.props.checked).length, 1);
@@ -1711,19 +1968,19 @@ test("message selection starts from the header and cancellation clears it", asyn
 	switchHeaderSidebarToOverlay(env);
 	const overlay = env.registrations.get("btw");
 	let tree = env.render(overlay);
-	assert.equal(all(tree, (n) => n.type === "button" && n.children.includes("选择消息")).length, 0);
+	assert.equal(all(tree, (n) => n.type === "button" && n.props["aria-label"] === "选择消息").length, 0);
 	all(tree, (n) => n.type === "textarea")[0].props.onChange({ target: { value: "hello" } });
 	tree = env.render(overlay); all(tree, (n) => n.props["aria-label"] === "发送")[0].props.onClick(); await tick(); await tick();
 	tree = env.render(overlay);
 	assert.equal(all(tree, (n) => n.type === "input" && n.props.type === "checkbox").length, 0);
 	const header = all(tree, (n) => n.props.className === "dsh-btw-mhead")[0];
-	all(header, (n) => n.type === "button" && n.children.includes("选择消息"))[0].props.onClick();
+	all(header, (n) => n.type === "button" && n.props["aria-label"] === "选择消息")[0].props.onClick();
 	tree = env.render(overlay); all(tree, (n) => n.type === "input" && n.props.type === "checkbox")[0].props.onChange();
-	tree = env.render(overlay); all(tree, (n) => n.type === "button" && n.children.includes("取消选择"))[0].props.onClick();
+	tree = env.render(overlay); all(tree, (n) => n.type === "button" && n.props["aria-label"] === "选择消息")[0].props.onClick();
 	tree = env.render(overlay);
 	assert.equal(all(tree, (n) => n.type === "input" && n.props.type === "checkbox").length, 0);
 	assert.equal(all(tree, (n) => n.type === "button" && typeof n.children[0] === "string" && n.children[0].startsWith("送回")).length, 0);
-	all(tree, (n) => n.type === "button" && n.children.includes("选择消息"))[0].props.onClick();
+	all(tree, (n) => n.type === "button" && n.props["aria-label"] === "选择消息")[0].props.onClick();
 	assert.ok(all(env.render(overlay), (n) => n.type === "input" && n.props.type === "checkbox").every((n) => !n.props.checked));
 	env.cleanup();
 });
@@ -1746,8 +2003,22 @@ test("message selection uses small named native checkboxes and draft success is 
 	assert.ok(env.getDraft().includes("助手：answer"));
 	assert.equal(env.calls.filter((c) => c[1] === "send").length, 1);
 	assert.equal(all(tree, (n) => n.type === "input" && n.props.type === "checkbox").length, 0);
-	all(tree, (n) => n.type === "button" && n.children.includes("选择消息"))[0].props.onClick();
+	all(tree, (n) => n.type === "button" && n.props["aria-label"] === "选择消息")[0].props.onClick();
 	assert.equal(all(env.render(overlay), (n) => n.props.role === "status").length, 0);
+	env.cleanup();
+});
+
+test("return to draft uses live DSH locale and labels English messages User and Agent", async () => {
+	const documentElement = { lang: "zh-CN" };
+	const env = await tempFixture({ document: { documentElement } });
+	const overlay = await startAndSelect(env);
+	let tree = env.render(overlay);
+	all(tree, n => n.props["aria-label"] === "选择消息 2")[0].props.onChange();
+	documentElement.lang = "en-US";
+	tree = env.render(overlay);
+	all(tree, n => n.type === "button" && typeof n.children[0] === "string" && n.children[0].startsWith("送回"))[0].props.onClick();
+	assert.match(env.getDraft(), /User: hello\n\nAgent: answer/);
+	assert.equal(env.calls.filter(c => c[1] === "send").length, 1);
 	env.cleanup();
 });
 
@@ -1817,6 +2088,7 @@ test("default is the only policy item; legacy settings normalize and RPC resolve
 			assert.deepEqual(all(select, (n) => n.type === "option").map((n) => [n.props.value, n.children[0]]), [["default", "默认"]]);
 			tree = typeTemp(env, overlay, "hello", overlayProps); button(tree, "发送").props.onClick(); await tick(); await tick();
 			assert.equal(env.calls.find((c) => c[1] === "open")[2].modelMode, parent ? "current" : "host");
+			button(env.render(overlay, overlayProps), "结束临时聊天").props.onClick(); await tick();
 			env.render(env.registrations.get("btw-trigger")).props.onClick();
 			const ask = env.registrations.get("btw-ask"), props = { sessionId: parent };
 			tree = env.render(ask, props); all(tree, (n) => n.type === "textarea")[0].props.onChange({ target: { value: "ask" } });
@@ -1828,7 +2100,7 @@ test("default is the only policy item; legacy settings normalize and RPC resolve
 	const env = await setup({ askModelMode: "custom", askProvider: "p", askModel: "m" }); await tick();
 	const settings = env.registrations.get("dsh-btw#btw")({}).type;
 	const model = modelTree(env, env.render(settings)); all(model, (n) => n.type === "select")[0].props.onChange({ target: { value: "default" } }); await tick();
-	assert.deepEqual(env.writes.at(-1), ["askModelMode", "host"]);
+	assert.deepEqual(env.writes.slice(-2), [["askModelMode", "host"], ["tempModelMode", "host"]]);
 	assert.equal(all(modelTree(env, env.render(settings)), (n) => n.type === "select")[0].props.value, "default"); env.cleanup();
 });
 
@@ -1943,7 +2215,7 @@ test("stale configuration callbacks remain pinned; closing a sourced sidebar can
 	button(tree, "停靠侧边栏").props.onClick();
 	const pane = env.render(env.registrations.get("dsh-btw/temp"), { btwSessionId: "origin" });
 	tree = focusChat(env, overlay, "btw-1");
-	assert.equal(modeControl(tree, "sidebar").props.disabled, true);
+	assert.equal(all(tree, n => n.props["data-btw-mode"] === "sidebar").length, 0);
 	const currentPane = env.render(pane.type, pane.props);
 	button(currentPane, "结束对话").props.onClick(); await tick();
 	tree = env.render(overlay);
@@ -2001,22 +2273,24 @@ function geometryStorage() {
 const projectProps = (cwd = "/project", sessionId = "origin") => ({ sessionId, useSessions: (fn) => fn({ byId: { [sessionId]: { cwd } } }) });
 const modal = (tree) => all(focusedTree(tree), (n) => n.props.className === "dsh-btw-modal")[0];
 
-test("small window is pinned by default; pointer dragging and resize clamp numeric project-local geometry", async () => {
+test("small window is draggable by default; pin blocks dragging and geometry remains project-local", async () => {
 	const storage = geometryStorage(), env = await setup({}, { storage, width: 1000, height: 700 }); await tick();
 	const overlay = env.registrations.get("btw"); env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
 	let tree = typeTemp(env, overlay, "PRIVATE DRAFT NEVER PERSIST");
 	let head = all(tree, (n) => n.props.className === "dsh-btw-mhead")[0];
+	assert.equal(button(tree, "固定小窗").props["aria-pressed"], false);
+	button(tree, "固定小窗").props.onClick(); tree = env.render(overlay); head = all(tree, n => n.props.className === "dsh-btw-mhead")[0];
 	assert.equal(button(tree, "固定小窗").props["aria-pressed"], true);
 	modal(tree).props.ref.current = { getBoundingClientRect: () => ({ left: 100, top: 30 }) };
 	const event = { button: 0, pointerId: 1, clientX: 100, clientY: 50, target: {}, currentTarget: { setPointerCapture() {} }, preventDefault() {} };
 	head.props.onPointerDown(event); head.props.onPointerMove({ pointerId: 1, clientX: 9000, clientY: 9000 });
-	assert.equal(modal(env.render(overlay)).props.style.left, 130); assert.equal(storage.writes.length, 0);
+	assert.equal(modal(env.render(overlay)).props.style.left, 130); assert.deepEqual(storage.writes, [["dsh-btw/window-pinned/v1", "true"]]);
 	button(tree, "固定小窗").props.onClick(); tree = env.render(overlay); head = all(tree, (n) => n.props.className === "dsh-btw-mhead")[0];
 	assert.equal(head.props["data-draggable"], true);
 	head.props.onPointerDown(event); head.props.onPointerMove({ pointerId: 1, clientX: 9000, clientY: 9000 }); head.props.onPointerUp();
 	tree = env.render(overlay); assert.equal(modal(tree).props.style.left, 260); assert.equal(modal(tree).props.style.top, 60);
-	assert.equal(storage.values.size, 1);
-	for (const [key, json] of storage.writes) {
+	assert.equal(storage.values.size, 2);
+	for (const [key, json] of storage.writes.filter(([key]) => key.includes("/geometry/"))) {
 		assert.equal(key, "dsh-btw/geometry/v1/%2Fproject");
 		assert.ok(Object.values(JSON.parse(json)).every(Number.isFinite)); assert.doesNotMatch(json, /PRIVATE|origin|session|model|draft/);
 	}
@@ -2029,6 +2303,61 @@ test("small window is pinned by default; pointer dragging and resize clamp numer
 	assert.equal(all(tree, (n) => n.type === "textarea")[0].props.value, "");
 	restored.render(restored.registrations.get("btw-temp"), projectProps("/another", "other")).props.onClick();
 	tree = restored.render(restored.registrations.get("btw")); assert.equal(modal(tree).props.style.left, 16); restored.cleanup();
+});
+
+test("dock to floating publishes usable bounds before the first pin and ignores a stale pin after returning", async () => {
+	const storage = geometryStorage(), env = await setup({}, { storage, width: 1400, height: 900 });
+	const composer = env.registrations.get("btw-ask"), overlay = env.registrations.get("btw");
+	const props = { ...projectProps(), inputActions: { captureInsertion() {}, insertText() {} } };
+	env.render(env.registrations.get("btw-trigger"), props).props.onClick();
+	const dock = () => env.render(composer, props);
+	all(dock(), n => n.type === "textarea")[0].props.onChange({ target: { value: "unsent draft" } });
+	const [controller] = env.viewControllers.values();
+	env.setViewport(560, 420);
+	const commits = [];
+	const patch = controller.store.patch;
+	controller.store.patch = fields => {
+		patch(fields);
+		if (controller.store.state.presentation === "overlay") {
+			const { x, y, width, height } = controller.store.state;
+			commits.push([x, y, width, height]);
+		}
+	};
+	button(dock(), "浮动小窗").props.onClick();
+	assert.deepEqual(commits, [[32, 48, 528, 372]], "seat and clamped bounds publish together");
+	const float = env.render(overlay);
+	const pin = button(float, "固定小窗");
+	pin.props.onClick();
+	const pinned = env.render(overlay);
+	assert.equal(button(pinned, "固定小窗").props["aria-pressed"], true);
+	assert.equal(all(pinned, n => n.type === "textarea")[0].props.value, "unsent draft");
+	assert.deepEqual(modal(pinned).props.style, modal(float).props.style);
+	button(pinned, "返回输入框上方").props.onClick();
+	pin.props.onClick();
+	assert.equal(env.render(overlay), null);
+	assert.equal(all(dock(), n => n.type === "textarea")[0].props.value, "unsent draft");
+	assert.deepEqual(storage.writes, [["dsh-btw/window-pinned/v1", "true"]]);
+	assert.ok(env.calls.every(([, method]) => method === "models"), "pinning performs no chat lifecycle operation");
+	env.cleanup();
+});
+
+test("explicit pin and unpin survive browser reload independently of geometry memory", async () => {
+	const storage = geometryStorage();
+	for (const [before, after] of [[false, true], [true, false], [false, undefined]]) {
+		const env = await setup({ tempRememberPosition: false }, { storage }); await tick();
+		env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
+		const overlay = env.registrations.get("btw");
+		const pin = () => button(env.render(overlay), "固定小窗");
+		assert.equal(pin().props["aria-pressed"], before);
+		if (after !== undefined) {
+			pin().props.onClick();
+			assert.equal(pin().props["aria-pressed"], after);
+			button(env.render(overlay), "新建临时聊天").props.onClick();
+			assert.equal(pin().props["aria-pressed"], after, "a new window uses the last explicit choice");
+		}
+		env.cleanup();
+	}
+	assert.deepEqual(storage.writes, [["dsh-btw/window-pinned/v1", "true"], ["dsh-btw/window-pinned/v1", "false"]]);
 });
 
 test("remember-position opt-out ignores stored geometry and writes nothing; bad storage degrades safely", async () => {
@@ -2045,14 +2374,14 @@ test("remember-position opt-out ignores stored geometry and writes nothing; bad 
 	}
 });
 
-test("default presentation settings use exactly three modes and project sidebar switches safely", async () => {
+test("window presentation remains out of settings and the project sidebar switches safely", async () => {
 	for (const mode of ["overlay", "sidebar", "global"]) {
 		for (const sourced of [true]) {
 			const selected = [], env = await setup({ tempPresentation: mode }, { effects: true, layout: { selectPanel: (id) => selected.push(id) }, sidebar: { mounted: { getSnapshot: () => "origin" }, openTab() {}, isExpanded: () => false } }); await tick();
 			env.render(env.registrations.get("btw-temp"), sourced ? projectProps() : {}).props.onClick();
 			const overlay = env.registrations.get("btw"), effective = sourced ? "sidebar" : "overlay";
 			let tree = effective === "global" ? env.render(overlay, { standalone: true }) : effective === "sidebar" ? env.render(overlay, { inline: true }) : env.render(overlay);
-			assert.ok(tree); if (effective === "sidebar") assert.equal(all(tree, n => n.props["data-btw-mode"]).length, 0); else assert.equal(modeControl(tree, effective).props["aria-pressed"], true);
+			assert.ok(tree); assert.deepEqual(all(tree, n => n.props["data-btw-mode"]).map(n => n.props["data-btw-mode"]), ["dock", "overlay"]);
 			assert.equal(all(tree, (n) => n.props["aria-label"] === "收起临时聊天").length, 0);
 			if (sourced) {
 				switchHeaderSidebarToOverlay(env); tree = env.render(overlay);
@@ -2066,13 +2395,10 @@ test("default presentation settings use exactly three modes and project sidebar 
 	}
 	const env = await setup(); await tick(); const settings = env.registrations.get("dsh-btw#btw")({}).type;
 	env.render(settings); await tick();
-	let tree = env.render(settings), select = all(tree, (n) => n.props["aria-label"] === "默认显示模式")[0];
-	assert.deepEqual(all(select, (n) => n.type === "option").map((n) => n.children[0]), ["小窗", "侧边栏", "全屏"]);
-	select.props.onChange({ target: { value: "sidebar" } });
-	for (const label of ["小窗默认固定", "记忆项目内的小窗位置和大小（仅数值）"])
-		all(tree, (n) => n.type === "input" && n.props.role === "switch" && n.props["aria-label"] === label)[0].props.onChange({ target: { checked: false } });
-	await tick();
-	assert.deepEqual(env.writes, [["tempPresentation", "sidebar"], ["tempWindowPinned", false], ["tempRememberPosition", false]]); env.cleanup();
+	const tree = env.render(settings);
+	assert.equal(all(tree, (n) => n.props["aria-label"] === "默认显示模式" || n.props["aria-label"] === "小窗默认固定").length, 0);
+	assert.equal(all(tree, (n) => n.props["aria-label"] === "上下文").length, 1);
+	assert.deepEqual(env.writes, []); env.cleanup();
 });
 
 test("native sidebar close ignores foreign tabs and closes only the current child", async () => {
@@ -2117,7 +2443,7 @@ test("all eight desktop resize handles capture pointers, preserve opposite edges
 	for (const edge of ["n", "ne", "e", "se", "s", "sw", "w", "nw"]) {
 		const storage = geometryStorage();
 		storage.values.set("dsh-btw/geometry/v1/%2Fproject", JSON.stringify({ x: 300, y: 200, width: 600, height: 450 }));
-		const env = await setup({}, { storage, width: 1400, height: 1000 }); await tick();
+		const env = await setup({ tempWindowPinned: true }, { storage, width: 1400, height: 1000 }); await tick();
 		const overlay = env.registrations.get("btw"); env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
 		let tree = typeTemp(env, overlay, "KEEP DRAFT"); const from = geometry(tree);
 		assert.equal(button(tree, "固定小窗").props["aria-pressed"], true);
@@ -2287,7 +2613,7 @@ test("reasoning factory follows each real seat with child-only input and old-hos
 	env.cleanup();
 });
 
-const dockPanel = tree => all(tree, n => n.props.className === "dsh-btw-card dsh-btw-dock-panel")[0];
+const dockPanel = tree => all(tree, n => n.props.className?.includes("dsh-btw-dock-panel"))[0];
 async function sideQuestionFixture(options = {}) {
 	const timers = manualTimers();
 	const env = await setup({ askContextMode: "none", ...options.config }, { effects: true, ...timers, ...options,
@@ -2333,13 +2659,11 @@ test("fixed composer-top panel scrolls its shared transcript internally and resi
 		assert.ok(Object.values(JSON.parse(json)).every(Number.isFinite)); assert.doesNotMatch(json, /paragraph|question|origin|job/);
 	}
 	const css = env.styles.join("");
-	assert.match(css, /dock-panel>\.dsh-btw-answer\{flex:1;min-height:0;margin-right:8px;overscroll-behavior:contain/);
-	assert.match(css, /dock-panel>\.dsh-btw-head,\.dsh-btw-dock-panel>\.dsh-btw-row\{flex:none/);
-	assert.match(css, /\.dsh-btw-answer\{[^}]*overflow-y:auto;scrollbar-width:thin/);
-	assert.match(css, /\.dsh-btw-q\{display:block;box-sizing:border-box;width:100%/);
-	assert.doesNotMatch(css, /\.dsh-btw-dock-panel>\.dsh-btw-row\{[^}]*overflow-y:auto/, "the editor container must not introduce a second scrollbar");
-	assert.match(css, /\.dsh-btw-mbody\{[^}]*overflow-y:auto;scrollbar-width:thin/);
-	assert.match(css, /\.dsh-btw-veil \.dsh-btw-mbody\{margin-right:8px/); env.cleanup();
+	assert.match(css, /\.dsh-btw-mbody\{flex:1;min-height:0;overflow-y:auto;scrollbar-width:thin/);
+	assert.match(css, /\[data-small=true\] \.dsh-btw-mbody\{margin-right:8px/);
+	assert.match(css, /\.dsh-btw-mta\{width:100%;box-sizing:border-box/);
+	assert.doesNotMatch(css, /\.dsh-btw-mfoot\{[^}]*overflow-y:auto/, "the editor must not introduce a second scrollbar");
+	env.cleanup();
 });
 
 test("fixed-panel geometry restores numeric size only, observes host column changes and honors memory opt-out", async () => {
@@ -2393,7 +2717,7 @@ test("public MarkdownText function and memo use the native safe text contract on
 		modeControl(tree, "global").props.onClick(); tree = env.render(overlay, { standalone: true }); verify(tree, false);
 		assert.equal(all(tree, n => n.type === "textarea")[0].props.value, "unsent followup");
 		assert.equal(env.calls.filter(c => c[1] === "open").length, 1); assert.equal(env.calls.filter(c => c[1] === "send").length, 1);
-		const css = env.styles.join(""); assert.match(css, /\.dsh-btw-prose\{[^}]*font-size:14px;line-height:24px/); assert.doesNotMatch(css, /\.dsh-btw-msg\.agent \.dsh-btw-bubble/);
+		const css = env.styles.join(""); assert.match(css, /\.dsh-btw-prose\{[^}]*font-size:var\(--dsh-content-font-size,14px\);line-height:calc\(24px \+ var\(--dsh-content-font-delta,0px\)\)/); assert.doesNotMatch(css, /\.dsh-btw-msg\.agent \.dsh-btw-bubble/);
 		assert.deepEqual(env.required, ["react", "@deepseek-ai/dsh-client-ui-primitives"]); env.cleanup();
 	}
 });
@@ -2553,7 +2877,7 @@ test("canceling a concurrently loading float leaves the pending dock request int
 	const ask = env.registrations.get("btw-ask"), props = chatProps("origin");
 	env.render(ask, props); env.render(env.registrations.get("btw-trigger"), { sessionId: "origin" }).props.onClick();
 	env.render(ask, props);
-	env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
+	env.render(env.registrations.get("btw-temp"), projectProps("/another", "other")).props.onClick();
 	const overlay = env.render(env.registrations.get("btw"));
 	all(overlay, n => n.props["aria-label"] === "取消加载 btw")[0].props.onClick();
 	assert.ok(all(env.render(ask, props), n => n.props.className === "dsh-btw-card dsh-btw-dock-loading").length);
@@ -2593,7 +2917,7 @@ test("first slash question survives a failed sibling fetch, safe retry and concu
 	all(tree, n => n.type === "button" && n.children.includes("重试"))[0].props.onClick();
 	await tick(); tree = env.render(ask, props);
 	assert.equal(all(tree, n => n.type === "textarea")[0].props.value, "carried question");
-	assert.equal(all(env.render(env.registrations.get("btw")), n => n.props["data-chat-id"]).length, 1);
+	assert.equal(env.render(env.registrations.get("btw")), null, "concurrent entrances for the same source share a single seat");
 	assert.deepEqual(env.calls.map(c => c[1]), ["models"], "retry does not submit a question or create an agent");
 	env.cleanup();
 });
@@ -2640,9 +2964,11 @@ test("recent snapshot retains completed message tails, tool-only text and a fina
 		else if (nodes[0].content[0].text.length > 48_000) assert.equal(snapshot, ("User: " + nodes[0].content[0].text).slice(-48_000));
 		else if (nodes.length > 14) assert.match(snapshot, /needle-older-short-message/);
 		else { assert.match(snapshot, /needle-user/); assert.match(snapshot, /needle-assistant/); }
-		env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
-		const overlay = env.registrations.get("btw"); button(typeTemp(env, overlay, "search from child"), "发送").props.onClick(); await tick(); await tick();
-		assert.equal(env.calls.find(c => c[1] === "open")[2].transcript, snapshot);
+		modeControl(env.render(component, props), "overlay").props.onClick();
+		const overlay = env.registrations.get("btw");
+		button(env.render(overlay), "新建临时聊天").props.onClick();
+		button(typeTemp(env, overlay, "search from child"), "发送").props.onClick(); await tick(); await tick();
+		assert.deepEqual(env.calls.filter(c => c[1] === "open").map(c => c[2].transcript), [snapshot, snapshot]);
 		assert.ok(env.calls.every(c => ["models", "ask", "open", "send", "poll"].includes(c[1])), "recent search never fetches full history");
 		env.cleanup();
 	}
@@ -2676,7 +3002,7 @@ function publicSidebar() {
 			if (failClose) throw new Error("sidebar close offline");
 			closeHandler?.(mounted, { id, kind: tab.kind });
 			tabs.delete(id); closed.push({ ...tab });
-			expanded = rows().some(tab => tab.sessionId === mounted);
+			// DSH keeps the column expanded and supplies a guide after the last tab.
 			if (activeId === id) activeId = rows().find(tab => tab.sessionId === mounted)?.tabId || null;
 			notify();
 		},
@@ -2691,6 +3017,73 @@ function publicSidebar() {
 	};
 }
 
+test("each of the three entries opens in its own configured position and resumes an existing chat", async () => {
+	const entries = ["chip", "slash", "header"];
+	for (const mode of ["dock", "sidebar", "overlay"]) for (const [i, entry] of entries.entries()) {
+		const surface = publicSidebar();
+		function SegmentedControl() {}
+		const env = await setup({}, { sidebar: surface.right, primitives: { SegmentedControl } });
+		const settings = env.render(env.registrations.get("dsh-btw#btw")({}).type);
+		const positions = all(settings, n => n.type === SegmentedControl);
+		assert.deepEqual(positions.map(n => n.props.value), ["dock", "dock", "sidebar"]);
+		positions[i].props.onChange(mode); await tick();
+		assert.deepEqual(env.writes, [[entry + "Presentation", mode]]);
+		assert.deepEqual(all(env.render(env.registrations.get("dsh-btw#btw")({}).type), n => n.type === SegmentedControl).map(n => n.props.value),
+			["dock", "dock", "sidebar"].map((value, j) => i === j ? mode : value));
+		let draft = "";
+		const props = { ...projectProps(), useInput: select => select({ draft }),
+			inputActions: { setDraft: next => { draft = next; }, captureInsertion() {}, insertText() {} } };
+		const panel = env.registrations.get("btw-ask"), chip = env.registrations.get("btw-trigger"), header = env.registrations.get("btw-temp");
+		const overlay = env.registrations.get("btw");
+		const side = () => env.render(overlay, { inline: true });
+		const view = () => mode === "dock" ? env.render(panel, props) : mode === "sidebar" ? side() : env.render(overlay);
+		env.render(panel, props);
+		assert.equal(env.render(chip, props).children[0], "顺便问");
+		if (entry === "chip") env.render(chip, props).props.onClick();
+		else if (entry === "header") env.render(header, props).props.onClick();
+		else { draft = "/btw sample"; env.render(panel, props); assert.equal(draft, ""); }
+		const tree = view();
+		const field = all(tree, n => n.type === "textarea")[0];
+		assert.equal(field.props.value, entry === "slash" ? "sample" : "");
+		if (entry !== "slash") field.props.onChange({ target: { value: "sample" } });
+		const [controller] = env.viewControllers.values();
+		assert.equal(controller.store.state.presentation, mode);
+		assert.equal(env.render(header, props).props["aria-label"], "顺便问");
+		env.render(header, props).props.onClick();
+		assert.equal(controller.store.state.presentation, mode, "the header continues the chat at its current seat");
+		const resumed = view();
+		assert.equal(all(resumed, n => n.type === "textarea")[0].props.value, "sample");
+		assert.equal(env.viewControllers.size, 1);
+		draft = "/btw continued"; env.render(panel, props);
+		assert.equal(all(view(), n => n.type === "textarea")[0].props.value, "sample\ncontinued");
+		assert.equal(controller.store.state.presentation, mode);
+		assert.ok(env.calls.every(([, method]) => method === "models"), "the entries never send a draft");
+		env.cleanup();
+	}
+});
+
+test("older shared setting initializes both composer entries without coupling later changes", async () => {
+	function SegmentedControl() {}
+	const env = await setup({ askPresentation: "overlay", chipPresentation: "inherit", slashPresentation: "inherit" }, { primitives: { SegmentedControl } });
+	const card = env.registrations.get("dsh-btw#btw")({}).type;
+	const controls = () => all(env.render(card), n => n.type === SegmentedControl);
+	assert.deepEqual(controls().map(n => n.props.value), ["overlay", "overlay", "sidebar"]);
+	controls()[0].props.onChange("dock"); await tick();
+	assert.deepEqual(controls().map(n => n.props.value), ["dock", "overlay", "sidebar"]);
+	assert.deepEqual(env.writes, [["chipPresentation", "dock"]]);
+	env.cleanup();
+});
+
+test("composer sidebar preference falls back to a floating window when the host has no sidebar", async () => {
+	const env = await setup({ chipPresentation: "sidebar" });
+	const props = projectProps();
+	env.render(env.registrations.get("btw-ask"), props);
+	env.render(env.registrations.get("btw-trigger"), props).props.onClick();
+	assert.ok(env.render(env.registrations.get("btw")));
+	assert.equal([...env.viewControllers.values()][0].store.state.presentation, "overlay");
+	env.cleanup();
+});
+
 test("header sidebar waits once for its source and respects a small-window switch", async () => {
 	for (const cancel of [false, true]) {
 		let mounted, opened = 0; const listeners = new Set();
@@ -2698,10 +3091,11 @@ test("header sidebar waits once for its source and respects a small-window switc
 		await tick(); const overlay = env.registrations.get("btw");
 		env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
 		let tree = env.render(overlay); assert.ok(tree, "pending mount has a safe small window");
-		if (cancel) modeControl(tree, "overlay").props.onClick();
+		if (cancel) button(tree, "最小化 btw").props.onClick();
 		mounted = "origin"; for (const fn of [...listeners]) fn();
 		assert.equal(opened, cancel ? 0 : 1);
-		assert.ok(env.render(overlay, cancel ? {} : { inline: true }));
+		if (cancel) assert.equal(env.render(overlay), null);
+		else assert.ok(env.render(overlay, { inline: true }));
 		env.cleanup();
 	}
 });
@@ -2731,7 +3125,7 @@ test("sidebar leaves fullscreen to the host, omits minimize, and X ends the chil
 	env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
 	button(typeTemp(env, overlay, "owned question", inline), "发送").props.onClick(); await tick(); await tick();
 	const tree = env.render(overlay, inline);
-	assert.equal(all(tree, n => n.props["data-btw-mode"]).length, 0);
+	assert.deepEqual(all(tree, n => n.props["data-btw-mode"]).map(n => n.props["data-btw-mode"]), ["dock", "overlay"]);
 	assert.equal(all(tree, n => n.props["aria-label"] === "最小化 btw").length, 0);
 	button(tree, "结束临时聊天").props.onClick(); await tick();
 	assert.deepEqual(env.calls.filter(c => c[1] === "close").map(c => c[2].sessionId), ["fixture-child"]);
@@ -2739,19 +3133,32 @@ test("sidebar leaves fullscreen to the host, omits minimize, and X ends the chil
 	env.cleanup();
 });
 
-test("ending an active sidebar chat hides its column without removing another tab", async () => {
-	for (const activeOwn of [true, false]) {
-		const surface = publicSidebar(), hidden = [];
-		surface.right.hide = id => hidden.push(id);
+test("closing BTW via either X collapses only when no other user tabs are open", async () => {
+	for (const close of ["btw", "native"]) for (const other of ["none", "guide", "file"]) {
+		const surface = publicSidebar();
 		const env = await setup({}, { sidebar: surface.right });
+		if (other !== "none") surface.seed("origin", "other", other);
 		env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
-		const tree = env.render(env.registrations.get("btw"), { inline: true });
-		if (!activeOwn) surface.right.active = () => ({ id: "guide", kind: "guide" });
-		button(tree, "结束临时聊天").props.onClick(); await tick();
-		assert.equal(hidden.length, activeOwn ? 1 : 0);
-		if (activeOwn) assert.equal(hidden[0], "tab-1");
+		if (close === "native") surface.right.close("tab-1");
+		else button(env.render(env.registrations.get("btw"), { inline: true }), "结束临时聊天").props.onClick();
+		await tick();
+		assert.equal(surface.expanded(), other === "file", close + " / " + other);
+		assert.deepEqual(surface.rows().map(tab => tab.kind), other === "none" ? [] : [other]);
+		assert.deepEqual(surface.closed.map(tab => tab.tabId), ["tab-1"]);
 		env.cleanup();
 	}
+});
+
+test("native BTW close does not collapse a tab that opened before the close commit settled", async () => {
+	const surface = publicSidebar();
+	const env = await setup({}, { sidebar: surface.right });
+	env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
+	surface.right.close("tab-1");
+	surface.seed("origin", "new-view", "file");
+	await tick();
+	assert.equal(surface.expanded(), true);
+	assert.deepEqual(surface.rows().map(tab => tab.tabId), ["new-view"]);
+	env.cleanup();
 });
 
 test("mode changes retire only owned sidebar pages, keep the child, and explicit end retires its tab without recursive close", async () => {
@@ -2826,18 +3233,17 @@ test("public Button/Tooltip/window icons share guidance across fixed and shared 
 	const env = await setup({}, { primitives, layout: { selectPanel() {} } });
 	env.render(env.registrations.get("btw-trigger")).props.onClick();
 	const askTree = env.render(env.registrations.get("btw-ask"), chatProps("origin"));
-	assert.equal(all(askTree, n => n.type === Button && n.props["data-btw-mode"]).length, 3);
+	assert.equal(all(askTree, n => n.type === Button && n.props["data-btw-mode"]).length, 2);
 	assert.equal(all(askTree, n => n.type === "select" && n.props["aria-label"] === "显示模式").length, 0);
 	const mode = name => all(askTree, n => n.props["data-btw-mode"] === name)[0];
-	assert.equal(mode("overlay").props["aria-pressed"], true);
-	assert.equal(mode("sidebar").props.disabled, true); assert.match(mode("sidebar").props.title, /侧边栏不可用/);
+	assert.equal(mode("sidebar"), undefined, "unavailable modes are omitted");
 	assert.equal(mode("global").props.size, "sm"); assert.equal(all(mode("global"), n => n.type === Fullscreen).length, 1);
 	assert.equal(all(mode("overlay"), n => n.type === "svg").length, 1); assert.equal(all(mode("overlay"), n => n.type === PinFill).length, 0);
 	for (const tooltip of all(askTree, n => n.type === Tooltip)) { assert.equal(tooltip.props.side, "bottom"); assert.equal(tooltip.props.delayMs, 500); assert.equal(typeof tooltip.props.label, "string"); }
 	mode("overlay").props.onClick();
 	const tree = env.render(env.registrations.get("btw"));
-	assert.equal(all(tree, n => n.type === PinFill).length, 1);
-	assert.match(all(tree, n => n.props["data-btw-mode"] === "sidebar")[0].props.title, /侧边栏不可用/);
+	assert.equal(all(tree, n => n.type === PinOutline).length, 1);
+	assert.equal(all(tree, n => n.props["data-btw-mode"] === "sidebar").length, 0);
 	env.cleanup();
 });
 
@@ -2859,14 +3265,44 @@ test("collapsed dock editor leaves the transcript the full panel height and the 
 	const tree = await env.submit();
 	const card = dockPanel(tree);
 	assert.equal(card.props["data-editor"], "collapsed");
-	assert.equal(all(tree, n => n.props.className === "dsh-btw-row").length, 0, "no editor row consumes panel height while collapsed");
+	assert.equal(all(tree, n => n.props.className === "dsh-btw-mfoot").length, 0, "no editor row consumes panel height while collapsed");
 	const toggle = button(tree, "展开输入框");
 	assert.equal(toggle.props["aria-expanded"], false);
 	assert.ok(card.children.indexOf(toggle) > card.children.indexOf(all(tree, n => n.props["aria-label"] === "侧问消息")[0]), "floating toggle anchors after the scrolling body");
 	const css = env.styles.join("");
 	assert.match(css, /\.dsh-btw-editor-toggle\{[^}]*position:absolute/);
-	assert.match(css, /\.dsh-btw-row>\.dsh-btw-editor-toggle\{bottom:auto;top:-12px;/);
-	assert.match(css, /\.dsh-btw-dock-panel\[data-editor=collapsed\]>\.dsh-btw-answer\{padding-bottom:34px;/);
+	assert.match(css, /\.dsh-btw-mfoot>\.dsh-btw-editor-toggle\{bottom:auto;top:-12px;/);
+	assert.match(css, /\.dsh-btw-dock-panel\[data-editor=collapsed\]>\.dsh-btw-mbody\{padding-bottom:34px;/);
+	env.cleanup();
+});
+
+test("shared small-window divider grows the composer by pointer and keyboard, clamps, and resets", async () => {
+	const env = await sideQuestionFixture();
+	const overlay = env.registrations.get("btw");
+	env.render(env.registrations.get("btw-trigger"), env.props).props.onClick();
+	const css = env.styles.join("");
+	assert.match(css, /\.dsh-btw-composer-divider\{[^}]*inset-inline:0;/);
+	assert.match(css, /\.dsh-btw-composer-divider::before\{[^}]*inset-inline:0;[^}]*height:1px;/);
+	assert.doesNotMatch(css, /\.dsh-btw-composer-divider::after/);
+	for (const [seat, props] of [[env.ask, env.props], [overlay, {}]]) {
+		const view = () => env.render(seat, props);
+		const divider = () => all(view(), n => n.props["aria-label"] === "调整输入框高度")[0];
+		const editor = () => all(view(), n => n.type === "textarea")[0];
+		assert.equal(divider().props.role, "separator");
+		divider().props.onPointerDown({ button: 0, pointerId: 1, clientY: 100, currentTarget: { setPointerCapture() {} }, preventDefault() {} });
+		divider().props.onPointerMove({ pointerId: 1, clientY: 65 });
+		assert.equal(editor().props.style["--btw-composer-height"], "59px");
+		divider().props.onPointerUp();
+		divider().props.onPointerMove({ pointerId: 1, clientY: 85 });
+		assert.equal(divider().props["aria-valuenow"], 59);
+		divider().props.onKeyDown({ key: "ArrowUp", preventDefault() {}, stopPropagation() {} });
+		assert.equal(divider().props["aria-valuenow"], 67);
+		divider().props.onKeyDown({ key: "End", preventDefault() {}, stopPropagation() {} });
+		assert.equal(divider().props["aria-valuenow"], divider().props["aria-valuemax"]);
+		divider().props.onDoubleClick();
+		assert.equal(editor().props.style, undefined);
+		if (seat === env.ask) modeControl(view(), "overlay").props.onClick();
+	}
 	env.cleanup();
 });
 
@@ -2875,7 +3311,7 @@ test("expanded dock composer overlays the transcript, stays operable and keeps t
 	let tree = await env.submit();
 	button(tree, "展开输入框").props.onClick(); tree = env.render(env.ask, env.props);
 	assert.equal(dockPanel(tree).props["data-editor"], "expanded");
-	const row = all(tree, n => n.props.className === "dsh-btw-row")[0];
+	const row = all(tree, n => n.props.className === "dsh-btw-mfoot")[0];
 	assert.ok(row, "overlay composer row renders");
 	assert.ok(row.children.includes(all(tree, n => n.props["aria-label"] === "收起输入框")[0]), "the fold control rides the overlay edge instead of owning a row");
 	all(tree, n => n.type === "textarea")[0].props.onChange({ target: { value: "overlay draft" } });
@@ -2884,29 +3320,28 @@ test("expanded dock composer overlays the transcript, stays operable and keeps t
 	assert.equal(button(tree, "提问").props.disabled, false, "send stays operable above the overlay");
 	button(tree, "收起输入框").props.onClick(); tree = env.render(env.ask, env.props);
 	assert.equal(dockPanel(tree).props["data-editor"], "collapsed");
-	assert.equal(all(tree, n => n.props.className === "dsh-btw-row").length, 0);
+	assert.equal(all(tree, n => n.props.className === "dsh-btw-mfoot").length, 0);
 	button(tree, "展开输入框").props.onClick(); tree = env.render(env.ask, env.props);
 	assert.equal(all(tree, n => n.type === "textarea")[0].props.value, "overlay draft", "collapsing preserves the draft");
 	const css = env.styles.join("");
-	assert.match(css, /\.dsh-btw-dock-panel\[data-editor=expanded\]>\.dsh-btw-row\{position:absolute;left:0;right:0;bottom:0/);
-	assert.match(css, /\.dsh-btw-dock-panel\[data-editor=expanded\]>\.dsh-btw-answer\{padding-bottom:calc\(var\(--btw-editor-h,88px\) \+ 14px\);/);
+	assert.match(css, /\.dsh-btw-dock-panel\[data-editor=expanded\]>\.dsh-btw-mfoot\{position:absolute;left:0;right:0;bottom:0/);
+	assert.match(css, /\.dsh-btw-dock-panel\[data-editor=expanded\]>\.dsh-btw-mbody\{padding-bottom:calc\(var\(--btw-editor-h,88px\) \+ 14px\);/);
 	env.cleanup();
 });
 
 test("narrow dock head stays one row: icons never wrap over or clip the title", async () => {
 	const env = await sideQuestionFixture({ width: 360, height: 640 });
 	const tree = await env.submit();
-	const head = all(tree, n => n.props.className === "dsh-btw-head")[0];
+	const head = all(tree, n => n.props.className === "dsh-btw-mhead")[0];
 	const kids = head.children.filter(Boolean);
 	assert.equal(kids[0].props.className, "dsh-btw-mtitles", "shrinking title block stays first");
-	assert.ok(kids.some(n => n.type === "button" && n.children.includes("选择消息")), "text button remains present and shrinkable");
-	assert.equal(kids.at(-1).props.className, "dsh-btw-x", "close stays last and reachable");
+	assert.ok(kids.some(n => n.type === "button" && n.props["aria-label"] === "选择消息"), "selection icon stays reachable");
+	assert.equal(kids.at(-1).props["aria-label"], "关闭侧问面板", "close stays last and reachable");
 	const css = env.styles.join("");
-	assert.match(css, /\.dsh-btw-head\{display:flex;flex-wrap:nowrap;align-items:center;gap:4px;padding:6px 8px 0;min-width:0;/);
-	assert.match(css, /\.dsh-btw-head \.dsh-btw-mtitle\{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;/);
-	assert.match(css, /\.dsh-btw-head>button\.dsh-btw-control\{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;/);
-	assert.match(css, /\.dsh-btw-dock-panel\{[^}]*container-type:inline-size;/);
-	assert.match(css, /@container \(max-width:320px\)\{[^@]*min-width:22px/, "icon controls shrink before anything can overflow");
+	assert.match(css, /\[data-small=true\]>\.dsh-btw-mhead\{flex-wrap:nowrap;gap:4px;padding:8px 14px 6px;min-width:0;/);
+	assert.match(css, /\.dsh-btw-mhead \.dsh-btw-mtitle\{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;/);
+	assert.match(css, /\[data-small=true\]\{[^}]*container-type:inline-size;/);
+	assert.match(css, /@container \(max-width:360px\)\{[^@]*min-width:24px/, "icon controls shrink before anything can overflow");
 	assert.match(css, /@container \(max-width:250px\)\{[^@]*\.dsh-btw-mtitles\{display:none\}/, "the title drops out before icons collide with text");
 	env.cleanup();
 });
@@ -2932,7 +3367,7 @@ test("the overlay composer measures itself so the transcript scrolls clear of it
 	const writes = [], observed = []; let disconnected = 0;
 	const panelStyle = { setProperty: (k, v) => writes.push([k, v]), removeProperty: (k) => writes.push(["remove", k]) };
 	const ResizeObserver = class { constructor(apply) { this.apply = apply; } observe(el) { observed.push(el); } disconnect() { disconnected++; } };
-	const env = await sideQuestionFixture({ ResizeObserver, commitRef: node => node.props.className === "dsh-btw-card dsh-btw-dock-panel" ? { style: panelStyle } : node.props.className === "dsh-btw-row" ? { offsetHeight: 96 } : null });
+	const env = await sideQuestionFixture({ ResizeObserver, commitRef: node => node.props.className === "dsh-btw-modal dsh-btw-dock-panel" ? { style: panelStyle } : node.props.className === "dsh-btw-mfoot" ? { offsetHeight: 96 } : null });
 	let tree = await env.submit();
 	writes.length = 0; // the reply's transient expand→fold pass leaves no live clearance
 	button(tree, "展开输入框").props.onClick(); tree = env.render(env.ask, env.props);
@@ -3016,14 +3451,14 @@ test("fixed minimize is not end: reply/draft/child survive chip reopening, but X
 	env.render(dock, props); env.render(env.registrations.get("btw-trigger"), props).props.onClick();
 	button(typeTemp(env, dock, "keep running while minimized", props), "提问").props.onClick(); await tick();
 	let tree = env.render(dock, props), id = all(tree, n => n.props["data-chat-id"])[0].props["data-chat-id"];
-	assert.ok(modeControl(tree, "global"), "dock retains its fullscreen control");
 	button(tree, "最小化 btw").props.onClick(); assert.equal(env.render(dock, props), null);
 	assert.equal(env.calls.some(c => c[1] === "close"), false);
 	reply.resolve({ ok: true, value: { output: "background answer" } }); await tick(); await tick();
 	env.render(env.registrations.get("btw-trigger"), props).props.onClick(); tree = env.render(dock, props);
 	assert.equal(all(tree, n => n.props["data-chat-id"])[0].props["data-chat-id"], id);
 	assert.deepEqual(all(tree, isMessageContent).map(n => n.children[0]), ["keep running while minimized", "background answer"]);
-	button(tree, "展开输入框").props.onClick(); tree = env.render(dock, props);
+	const expand = all(tree, n => n.props["aria-label"] === "展开输入框")[0];
+	if (expand) { expand.props.onClick(); tree = env.render(dock, props); }
 	all(tree, n => n.type === "textarea")[0].props.onChange({ target: { value: "private unsent draft" } });
 	button(env.render(dock, props), "最小化 btw").props.onClick();
 	env.render(env.registrations.get("btw-trigger"), props).props.onClick(); tree = env.render(dock, props);
@@ -3056,7 +3491,7 @@ test("small-window/fullscreen minimize retains and reopens the same child throug
 		modeControl(env.render(dock, props), mode).props.onClick();
 		const viewProps = mode === "global" ? { standalone: true } : {};
 		let view = env.render(overlay, viewProps), id = all(view, n => n.props["data-chat-id"])[0].props["data-chat-id"];
-		assert.equal(modeControl(view, "global").props.disabled, false, "small window and global view retain fullscreen control");
+		assert.equal(all(view, n => n.props["data-btw-mode"] === "global").length, mode === "global" ? 0 : 1, "only alternative modes are shown");
 		button(view, "最小化 btw").props.onClick();
 		assert.equal(env.render(overlay, viewProps), null); assert.equal(surface.rows().length, 0);
 		assert.equal(env.calls.some(c => c[1] === "close"), false);
@@ -3182,15 +3617,65 @@ test("sidebar hides the retired 新建 and 最小化 controls and keeps the chat
 	}
 });
 
-test("floating window retains all mode controls while sidebar has none", async () => {
-	const surface = publicSidebar(), env = await setup({}, { sidebar: surface.right, layout: { selectPanel() {} } });
+test("small windows share the same chat and composer; chip and slash continue the moved chat", async () => {
+	const surface = publicSidebar(), env = await setup({}, { effects: true, sidebar: surface.right });
+	const overlay = env.registrations.get("btw"), dock = env.registrations.get("btw-ask"), trigger = env.registrations.get("btw-trigger");
+	const input = { draft: "" };
+	const props = { ...projectProps(), useInput: fn => fn(input), inputActions: { setDraft: text => { input.draft = text; } } };
+	env.render(dock, props); env.render(trigger, props).props.onClick();
+	let tree = typeTemp(env, dock, "unsent", props);
+	const id = dockPanel(tree).props["data-chat-id"];
+	const parts = tree => all(tree, n => ["dsh-btw-mhead", "dsh-btw-mbody", "dsh-btw-mfoot", "dsh-btw-mcard", "dsh-btw-mta"].includes(n.props.className)).map(n => n.props.className);
+	const before = parts(tree);
+	modeControl(tree, "overlay").props.onClick();
+	tree = env.render(overlay);
+	assert.deepEqual(parts(tree), before);
+	assert.equal(chatWindow(tree, id).props["data-chat-id"], id);
+	env.render(trigger, props).props.onClick();
+	assert.equal(env.render(dock, props), null);
+	input.draft = "/btw another line"; env.render(dock, props);
+	tree = env.render(overlay);
+	assert.equal(input.draft, "");
+	assert.equal(all(tree, n => n.type === "textarea")[0].props.value, "unsent\nanother line");
+	modeControl(tree, "dock").props.onClick();
+	tree = env.render(dock, props);
+	modeControl(tree, "sidebar").props.onClick();
+	tree = env.render(overlay, { inline: true });
+	assert.deepEqual(all(tree, n => n.props["data-btw-mode"]).map(n => n.props["data-btw-mode"]), ["dock", "overlay"]);
+	const leading = all(tree, n => n.props.className === "dsh-btw-composer-leading")[0];
+	const trailing = all(tree, n => n.props.className === "dsh-btw-composer-trailing")[0];
+	assert.ok(all(leading, n => n.props["aria-label"] === "临时聊天上下文").length);
+	assert.equal(trailing.children[0].type.name, "ModelSelect", "model is in the trailing group, next to Send");
+	assert.equal(trailing.children.at(-1).props["aria-label"], "发送");
+	modeControl(tree, "overlay").props.onClick();
+	tree = env.render(overlay);
+	assert.ok(chatWindow(tree, id));
+	assert.equal(all(tree, n => n.type === "textarea")[0].props.value, "unsent\nanother line");
+	modeControl(tree, "sidebar").props.onClick();
+	modeControl(env.render(overlay, { inline: true }), "dock").props.onClick();
+	tree = env.render(dock, props);
+	assert.equal(dockPanel(tree).props["data-chat-id"], id);
+	assert.equal(all(tree, n => n.type === "textarea")[0].props.value, "unsent\nanother line");
+	assert.equal(env.calls.some(c => c[1] !== "models"), false);
+	env.cleanup();
+});
+
+test("sidebar offers both small-window destinations and uses DSH's right-facing sidebar glyph", async () => {
+	function PanelLeft() {}
+	const surface = publicSidebar(), env = await setup({}, { sidebar: surface.right, layout: { selectPanel() {} }, primitives: { IconPanelLeftOutlineRegular: PanelLeft } });
 	const overlay = env.registrations.get("btw");
 	env.render(env.registrations.get("btw-temp"), projectProps()).props.onClick();
-	const sidebar = env.render(overlay, { inline: true }); assert.equal(all(sidebar, n => n.props["data-btw-mode"]).length, 0);
+	const sidebar = env.render(overlay, { inline: true }); assert.deepEqual(all(sidebar, n => n.props["data-btw-mode"]).map(n => n.props["data-btw-mode"]), ["dock", "overlay"]);
+	modeControl(sidebar, "overlay").props.onClick();
+	const dockAction = modeControl(env.render(overlay), "sidebar");
+	const glyph = all(dockAction, n => n.props.className === "dsh-btw-sidebar-glyph")[0];
+	assert.equal(glyph.children[0].type, PanelLeft);
+	assert.match(env.styles.join(""), /\.dsh-btw-sidebar-glyph\{display:inline-flex;transform:scaleX\(-1\)/);
+	button(env.render(overlay), "结束临时聊天").props.onClick(); await tick();
 	// A different source opens a floating window when its sidebar is not mounted.
 	env.render(env.registrations.get("btw-temp"), projectProps("/other", "other")).props.onClick();
 	const floating = env.render(overlay);
-	assert.deepEqual(all(floating, n => n.props["data-btw-mode"]).map(n => n.props["data-btw-mode"]), ["overlay", "sidebar", "global"]);
+	assert.deepEqual(all(floating, n => n.props["data-btw-mode"]).map(n => n.props["data-btw-mode"]), ["global"]);
 	env.cleanup();
 });
 

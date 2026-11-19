@@ -150,8 +150,11 @@ test("reasoning uses the public native disclosure and thinking icon when availab
 	let row = block.type(block.props).children[0];
 	assert.equal(row.type, DisclosureRow); assert.equal(row.props.title, "思考"); assert.equal(row.props.icon.type, ThinkIcon);
 	assert.equal(row.props.open, true); assert.equal(row.props.running, true); assert.equal(calls, 1);
-	assert.equal(row.props.collapsedContent.children[1].type, TextShimmer);
 	assert.equal(row.children[0].children[0], "native-body");
+	row.props.onToggle(); row = block.type(block.props).children[0];
+	assert.equal(row.props.collapsedContent[0].props["data-shimmer-decoration"], true);
+	assert.equal(row.props.collapsedContent[1].children[0].type, TextShimmer);
+	row.props.onToggle();
 	block.type({ ...block.props, running: false }); row = block.type({ ...block.props, running: false }).children[0];
 	assert.equal(row.props.open, false, "completed thinking automatically collapses");
 	row.props.onToggle(); row = block.type({ ...block.props, running: false }).children[0];

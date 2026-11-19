@@ -33,20 +33,23 @@ test("never toggles another tab and user gesture cancels", () => {
 function infoFixture() {
 	const source = readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
 	const code = source.slice(source.indexOf("\t\tfunction beginFullscreenWatch("), source.indexOf("\n\t\tfunction BtwSidebarBody("));
-	let now = 100, returns = 0, toggles = 0, targetId = "btw", tabs = [{ sessionId: "source", tabId: "btw", kind: "btw-temp" }];
+	let now = 100, returns = 0, returnMode, toggles = 0, targetId = "btw", tabs = [{ sessionId: "source", tabId: "btw", kind: "btw-temp" }];
 	const events = new Map(), windows = new Map(), controllers = new Map();
 	const right = { mounted: { getSnapshot: () => "source" }, openTabs: { getSnapshot: () => tabs }, commandTarget: () => ({ sessionId: "source", tabId: targetId, host: "dock" }), isTargetCurrent: () => true, toggleFullscreen: () => toggles++ };
 	const controller = { id: "c", sidebarTab: { right, sourceId: "source", tabId: "btw" }, store: { state: { originId: "source", presentation: "sidebar", phase: "active", draft: "kept" } } }; controllers.set("c", controller);
-	const context = { sidebar: right, controllers, unloading: false, Date: { now: () => now }, document: { addEventListener: (n, f) => events.set(n, f), removeEventListener: n => events.delete(n) }, window: { innerWidth: 1280, addEventListener: (n, f) => windows.set(n, f), removeEventListener: n => windows.delete(n) }, presentTemp(c, mode) { assert.equal(c, controller); assert.equal(mode, "dock"); c.stopFullscreenWatch(); returns++; } };
+	const context = { sidebar: right, controllers, unloading: false, Date: { now: () => now }, document: { addEventListener: (n, f) => events.set(n, f), removeEventListener: n => events.delete(n) }, window: { innerWidth: 1280, addEventListener: (n, f) => windows.set(n, f), removeEventListener: n => windows.delete(n) }, presentTemp(c, mode) { assert.equal(c, controller); returnMode = mode; c.stopFullscreenWatch(); returns++; } };
 	vm.runInNewContext(code + "\nthis.begin = beginFullscreenWatch; this.observe = observeSidebarInfo;", context);
 	const info = full => ({ sidebar: { fullscreen: full, expanded: true }, panel: { isFloating: false }, tab: { id: "btw", visible: true, signal: { aborted: false } } });
-	return { controller, context, info, observe: full => context.observe(controller, "source", info(full)), begin: () => context.begin(controller, right, "source", "btw"), gesture: () => { now += 10; events.get("pointerdown")?.(); }, resize: () => { now += 10; windows.get("resize")?.(); }, target: id => { targetId = id; }, tabs: t => { tabs = t; }, result: () => ({ returns, toggles }) };
+	return { controller, context, info, observe: full => context.observe(controller, "source", info(full)), begin: mode => context.begin(controller, right, "source", "btw", mode), gesture: () => { now += 10; events.get("pointerdown")?.(); }, resize: () => { now += 10; windows.get("resize")?.(); }, target: id => { targetId = id; }, tabs: t => { tabs = t; }, result: () => ({ returns, toggles, returnMode }) };
 }
 
 test("native exit returns the same controller only after observed fullscreen and gesture", () => {
-	const f = infoFixture(); f.begin(); f.observe(false); assert.equal(f.result().returns, 0);
-	f.observe(true); f.gesture(); f.observe(false);
-	assert.equal(f.result().returns, 1); assert.equal(f.controller.store.state.draft, "kept");
+	for (const mode of ["dock", "overlay"]) {
+		const f = infoFixture(); f.begin(mode); f.observe(false); assert.equal(f.result().returns, 0);
+		f.observe(true); f.gesture(); f.observe(false);
+		assert.equal(f.result().returns, 1); assert.equal(f.result().returnMode, mode);
+		assert.equal(f.controller.store.state.draft, "kept");
+	}
 });
 
 test("resize or foreign tab cannot cause a dock return", () => {
@@ -62,7 +65,7 @@ test("ordinary sidebar reset is one-shot, limited to sole tab and not narrow scr
 
 test("hide only the sole owned tab", () => {
 	const source = readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
-	const code = source.slice(source.indexOf("\t\tfunction hideSoleSidebarTab("), source.indexOf("\n\t\tfunction minimizeTemp("));
+	const code = source.slice(source.indexOf("\t\tfunction sidebarPages("), source.indexOf("\n\t\tfunction minimizeTemp("));
 	let tabs = [{ sessionId: "source", tabId: "btw", kind: "btw-temp" }], hides = 0;
 	const right = { mounted: { getSnapshot: () => "source" }, openTabs: { getSnapshot: () => tabs }, active: () => ({ id: "btw" }), hide() { hides++; } };
 	const context = { sidebar: right }; vm.runInNewContext(code + "\nthis.run = hideSoleSidebarTab;", context);

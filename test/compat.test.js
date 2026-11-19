@@ -343,6 +343,9 @@ test("client defers required capabilities including overlay and global entry, an
 	assert.equal(fixture.calls.length, 0, "unavailable safety capability does not create a session");
 	assert.equal(fixture.components.get("plugins.row.config")({ view: "summary" }), "侧问与临时聊天设置");
 	await fixture.scope.set("showTempEntry", false);
+	assert.equal(tempEntry(fixture)({ sessionId: "origin" }), null);
+	assert.ok(globalEntry({}));
+	await fixture.scope.set("showGlobalTempEntry", false);
 	assert.equal(tempEntry(fixture)({}), null);
 	assert.equal(globalEntry({}), null);
 	assert.equal(fixture.styles.length, 2);

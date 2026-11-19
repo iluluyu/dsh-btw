@@ -871,6 +871,23 @@ test("request modelMode overrides config; explicit model is custom; current neve
 	await f.h.cleanup();
 });
 
+test("model options inherit the parent route and validate BTW-only effort before opening", async () => {
+	const f = fixtureTemp();
+	const lookedUp = [];
+	const reasoning = { efforts: [{ id: "low", name: "Low" }, { id: "high", name: "High" }], defaultEffort: "low" };
+	f.h.services.llm.resolveModelInfo = async (provider, model) => { lookedUp.push([provider, model]); return { provider, id: model, reasoning }; };
+	const payload = { modelMode: "current", parentSessionId: "parent" };
+	assert.deepEqual((await f.h.call("modelOptions", payload)).value, { reasoning, selectedEffort: "low" });
+	assert.deepEqual(lookedUp[0], ["parent", "active"]);
+	assert.equal((await f.h.call("open", { ...payload, reasoningEffort: "unsupported" })).ok, false);
+	assert.equal(f.selections.length, 0);
+	const id = await opened(f, { ...payload, reasoningEffort: "high" });
+	assert.deepEqual(f.selections.at(-1), { ...parentModel, reasoningEffort: "high" });
+	assert.equal(parentModel.reasoningEffort, "low");
+	await closed(f, id);
+	await f.h.cleanup();
+});
+
 test("provider errors, aborted streams and empty answers never become success", async () => {
 	for (const chunks of [
 		[{ type: "error", error: { message: "provider rejected" } }],
