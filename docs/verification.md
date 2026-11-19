@@ -1,5 +1,22 @@
 # 本地验证记录
 
+## BTW：普通输入框和原生临时聊天之间保留草稿
+
+- 仅接续纯文字。进入时读取当前普通会话的未发送草稿；退出时把临时输入框里的未发送内容带回。切换不发送，不覆盖目标会话已有且不同的草稿；附件、引用和正在提交的输入不迁移。
+- DSH `0.2.2-rc.5` + Chromium + 环回模型：`node scripts/smoke-on-demand-browser.mjs --native-draft` 验证进入、编辑、退出，零模型调用；再次开启并明确发送后，同一临时会话收到回复，退出后已发送文字不回填。原按需引用浏览器回归、`npm run check`、333 项自动化测试及 `git diff --check` 通过。[退出后普通输入框保留草稿](verification/native-draft/returned.png)。
+- 经用户确认，已热更新原 Windows DSH `0.2.2-rc.5` 窗口，未重启或另开实例。在单独的测试工作区验证：普通草稿进入临时聊天，在临时输入框编辑，退出后普通输入框保留逐字一致的内容；重新进入后明确发送一次，收到真实模型回复。再次退出后无可发送文字、发送按钮禁用，两个测试会话的 JSONL 和恢复记录均已清理。[Windows 草稿返回截图](verification/native-draft/windows-returned.png)。
+
+## BTW 0.1.1：Windows 首发、真实收发和延迟加载
+
+- DSH `0.2.2-rc.5` 原 Windows 桌面窗口，复现 `0.1.0` 临时聊天已创建但输入框仍处于工作区选择状态。定版包从 Windows CLI 安装后，无需重启：在原生输入框发送合成消息，现有真实模型返回 `BTW-E2E-OK-8F37`，界面显示完整回复且生成结束；退出后核对本次 JSONL 和两类恢复记录均移除。[仅含合成收发的截图](verification/windows/native-roundtrip-0.1.1.png)。
+- 同一个 Windows 窗口使用带计数器的临时 QA 构建：初始及打开原生临时聊天均为 0 个 BTW 可选分包；首次打开「顺便问」，仅加载 controllers、geometry、messages、views 共 4 个分包。最终安装包不带计数器。设置分包仅在进入设置时加载，由自动化覆盖。
+- `npm run check`、`npm test`（331 项）和 `git diff --check` 通过。WSL 隔离 DSH Web + Chromium 分别通过按需引用、补读、流式滚动、重试四种真实宿主回归；测试使用本地模型替身。日常 WSL Web profile 未改动。
+
+## BTW：现有 Windows 桌面窗口恢复临时聊天
+
+- Terra 核对到 Windows `desktop` profile 缺少 `dsh-btw`。打包当前 checkout，以 Windows `dsh.cmd plugin --profile desktop add <本地 .tgz>` 恢复，并验证安装文件与 checkout 一致；WSL Web 未改动。
+- 在原有 DSH `0.2.2-rc.5` 窗口用新建空白会话验证两轮：打开后出现「结束临时聊天」和原生输入框，产生本次回收记录；退出后入口恢复，两类本次回收记录消失。原窗口未重启，未发送消息、未截图。排查步骤见 [Windows 桌面临时聊天](windows-desktop-temporary-chat.md)。
+
 ## BTW：流式思考平滑滚动
 
 - 移除每次消息更新都直接跳到末尾的逻辑。参考 DSH Chat 的底部跟随：用内容与视口尺寸更新触发原生平滑滚动，动画期间不重复发起；用户上滚时释放跟随，滚回末尾时恢复。减少动态效果开启时使用直接定位。

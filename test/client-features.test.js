@@ -39,7 +39,7 @@ async function setup(config = {}, options = {}) {
 		const tree = expand(result); for (const child of oldChildren) if (!childInstances.get(instance).has(child)) unmount(child); return tree; };
 	const sandbox = {
 		...(options.console ? { console: options.console } : {}),
-		window: { innerWidth: options.width || 1440, innerHeight: options.height || 900, localStorage: options.storage, addEventListener: (type, fn) => { if (!events.has(type)) events.set(type, new Set()); events.get(type).add(fn); }, removeEventListener: (type, fn) => events.get(type)?.delete(fn) },
+		window: { location: options.location, navigator: options.navigator, innerWidth: options.width || 1440, innerHeight: options.height || 900, localStorage: options.storage, addEventListener: (type, fn) => { if (!events.has(type)) events.set(type, new Set()); events.get(type).add(fn); }, removeEventListener: (type, fn) => events.get(type)?.delete(fn) },
 		document: { querySelector: () => null, createElement: () => ({ dataset: {} }), head: { appendChild: (tag) => styles.push(tag.textContent) },
 			addEventListener: (type, fn) => { if (!events.has(type)) events.set(type, new Set()); events.get(type).add(fn); },
 			removeEventListener: (type, fn) => events.get(type)?.delete(fn) },
@@ -130,6 +130,7 @@ test("source-free entry uses native RPC and closes only its owned session", asyn
 	heroClose.props.onClick(); await tick();
 	assert.deepEqual(calls, ["owned"], "only the owned native view is archived; no previous window is touched");
 	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"]);
+	assert.deepEqual(env.requests, [], "opening and closing native chat does not fetch any BTW sibling chunk");
 	env.cleanup();
 });
 
@@ -151,6 +152,122 @@ function workspaceChoices(items = []) {
 		set(next) { items = next; for (const fn of listeners) fn(); },
 	};
 }
+
+const windowsDesktop = { location: { protocol: "dsh-app:" }, navigator: { platform: "Win32" } };
+
+test("Windows native chat waits for authoritative workspace membership before opening the composer", async () => {
+	const f = nativeFixture(), pending = deferred(), requests = [];
+	const item = { workspaceId: "target", path: "/project", sessionIds: ["existing"] };
+	const workspaces = workspaceChoices([item]);
+	workspaces.insertSessionBefore = (...args) => { requests.push(args); return pending.promise; };
+	const env = await setup({}, { ...windowsDesktop, lazy: true, layout: f.layout, workspace: f, workspaces, rpc: method => ({ ok: true, value: method === "nativeOpen"
+		? { sessionId: "owned", workspaceId: "target" } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick();
+	assert.deepEqual(requests, [["target", "owned", "owned"]], "echo is a move-to-self, not a reorder");
+	assert.deepEqual(f.navigation, []);
+	workspaces.set([{ ...item, sessionIds: ["owned", "existing"] }]); pending.resolve(); await tick();
+	assert.deepEqual(f.navigation, [["open", "owned"]]);
+	assert.deepEqual(env.requests, [], "Windows projection recovery does not fetch optional chunks");
+	env.cleanup();
+});
+
+test("Windows native membership timeout never opens an inert composer; cleanup follows a late echo", async () => {
+	const f = nativeFixture(), pending = deferred(), clock = backgroundClock();
+	const workspaces = workspaceChoices([{ workspaceId: "target", sessionIds: [] }]);
+	workspaces.insertSessionBefore = () => pending.promise;
+	const env = await setup({}, { ...windowsDesktop, lazy: true, layout: f.layout, workspace: f, workspaces, ...clock, rpc: method => ({ ok: true, value: method === "nativeOpen"
+		? { sessionId: "owned", workspaceId: "target" } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick();
+	assert.equal(clock.size(), 1);
+	clock.flush(); await tick();
+	assert.match(JSON.stringify(env.render(entry)), /等待宿主工作区同步超时/);
+	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen"], "no detach while the host client can still merge a late echo");
+	pending.resolve(); await tick();
+	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"]);
+	assert.deepEqual(f.navigation, []);
+	env.cleanup();
+});
+
+test("Windows temporary chat canceled during membership echo never navigates to the owned session", async () => {
+	const f = nativeFixture(), pending = deferred();
+	const workspaces = workspaceChoices([{ workspaceId: "target", sessionIds: [] }]);
+	workspaces.insertSessionBefore = () => pending.promise;
+	const env = await setup({}, { ...windowsDesktop, lazy: true, layout: f.layout, workspace: f, workspaces, rpc: method => ({ ok: true, value: method === "nativeOpen"
+		? { sessionId: "owned", workspaceId: "target" } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading");
+	env.render(entry).props.onClick(); await tick();
+	env.render(entry).props.onClick(); await tick();
+	assert.equal(env.render(entry).props["aria-pressed"], false);
+	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen"]);
+	workspaces.set([{ workspaceId: "target", sessionIds: ["owned"] }]); pending.resolve(); await tick();
+	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose"]);
+	assert.deepEqual(f.navigation, []);
+	env.cleanup();
+});
+
+test("native membership echo is skipped for Web and for an already-observed Windows attachment", async () => {
+	for (const [platform, sessionIds] of [
+		[{ ...windowsDesktop, location: { protocol: "http:" } }, []],
+		[{ ...windowsDesktop, navigator: { platform: "MacIntel" } }, []],
+		[windowsDesktop, ["owned"]],
+	]) {
+		const f = nativeFixture();
+		const workspaces = workspaceChoices([{ workspaceId: "target", sessionIds }]);
+		let moves = 0; workspaces.insertSessionBefore = () => { moves++; };
+		const env = await setup({}, { ...platform, lazy: true, layout: f.layout, workspace: f, workspaces, rpc: method => ({ ok: true, value: method === "nativeOpen"
+			? { sessionId: "owned", workspaceId: "target" } : { burned: true } }) });
+		env.render(env.registrations.get("conversation.header.leading")).props.onClick(); await tick();
+		assert.equal(moves, 0); assert.deepEqual(f.navigation, [["open", "owned"]]);
+		env.cleanup();
+	}
+});
+
+test("native draft follows an explicit round trip without writing to an unrelated composer or resurrecting sent text", async () => {
+	const f = nativeFixture(); let opens = 0;
+	f.byId.normal = { blank: true, cwd: "/native/project", retainedBy: {} }; f.select("normal");
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => ({ ok: true, value: method === "nativeOpen"
+		? { sessionId: `owned-${++opens}` } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading"), dock = env.registrations.get("btw-ask");
+	const composer = (id, draft) => {
+		const input = { draft, phase: "plain", attachmentIds: [], occurrences: [] };
+		const actions = { setDraft: value => { input.draft = value; }, submit: () => assert.fail("handing off text must not send") };
+		return { input, render: () => env.render(dock, { sessionId: id, useInput: fn => fn(input), inputActions: actions }, id) };
+	};
+	const normal = composer("normal", "before the switch"), temp = composer("owned-1", ""), foreign = composer("other", "untouched");
+	normal.render(); env.render(entry).props.onClick(); await tick();
+	foreign.render(); assert.equal(foreign.input.draft, "untouched");
+	temp.render(); assert.equal(temp.input.draft, normal.input.draft);
+	temp.input.draft = "edited but unsent"; temp.render();
+	env.render(entry).props.onClick(); await tick(); normal.render();
+	assert.equal(normal.input.draft, "edited but unsent");
+	env.render(entry).props.onClick(); await tick();
+	const second = composer("owned-2", ""); second.render();
+	assert.equal(second.input.draft, "edited but unsent");
+	second.input.draft = ""; second.render(); // the native send committed its own draft
+	env.render(entry).props.onClick(); await tick(); normal.render();
+	assert.equal(normal.input.draft, "");
+	assert.deepEqual(env.calls.map(c => c[1]), ["nativeOpen", "nativeClose", "nativeOpen", "nativeClose"]);
+	assert.deepEqual(env.requests, [], "native draft support does not fetch optional BTW chunks");
+	env.cleanup();
+});
+
+test("temporary draft handoff leaves a conflicting destination draft and rich input untouched", async () => {
+	const f = nativeFixture();
+	f.byId.normal = { blank: true, cwd: "/native/project", retainedBy: {} }; f.select("normal");
+	const env = await setup({}, { lazy: true, layout: f.layout, workspace: f, rpc: method => ({ ok: true, value: method === "nativeOpen"
+		? { sessionId: "owned" } : { burned: true } }) });
+	const entry = env.registrations.get("conversation.header.leading"), dock = env.registrations.get("btw-ask");
+	const render = (id, input) => env.render(dock, { sessionId: id, useInput: fn => fn(input), inputActions: {
+		setDraft: () => assert.fail("existing draft must not be replaced"),
+	} }, id);
+	const normal = { draft: "reference text", phase: "plain", occurrences: [{}] };
+	render("normal", normal); env.render(entry).props.onClick(); await tick();
+	render("owned", { draft: "temporary draft", phase: "plain" });
+	env.render(entry).props.onClick(); await tick(); render("normal", normal);
+	env.cleanup();
+});
 
 test("temporary mode selected before the workspace enters on registration and absorbs the picker's late blank commit", async () => {
 	const f = nativeFixture(), workspaces = workspaceChoices();

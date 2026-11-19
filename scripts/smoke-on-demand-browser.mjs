@@ -4,7 +4,7 @@
 // stub answers every model call, an isolated HOME hosts dsh web, and a system
 // Chromium is driven over raw CDP using a clean temporary browser profile.
 //
-// Run: node scripts/smoke-on-demand-browser.mjs [--keep] [--supplement]
+// Run: node scripts/smoke-on-demand-browser.mjs [--keep] [--supplement | --scroll | --retry | --native-draft]
 // Env: CHROME_BIN (default /usr/sbin/chromium), DSH_BIN (default dsh).
 //
 // --supplement exercises the btw_read_context 补读 round trip: the stub's
@@ -29,7 +29,8 @@ const KEEP = process.argv.includes('--keep');
 const SUPPLEMENT = process.argv.includes('--supplement');
 const RETRY = process.argv.includes('--retry');
 const SCROLL = process.argv.includes('--scroll');
-assert.ok([SUPPLEMENT, RETRY, SCROLL].filter(Boolean).length <= 1);
+const NATIVE_DRAFT = process.argv.includes('--native-draft');
+assert.ok([SUPPLEMENT, RETRY, SCROLL, NATIVE_DRAFT].filter(Boolean).length <= 1);
 const RETRY_THOUGHT = 'RETRY-FIRST-THOUGHT';
 let retryStarted = false;
 const CHROME_BIN = process.env.CHROME_BIN || '/usr/sbin/chromium';
@@ -55,7 +56,7 @@ const NEIGHBOR = 'NEIGHBOR-EXT-8W2V';
 const MSG_PRE = `运维备忘：紧急联系分机 ${NEIGHBOR} 也请记牢。回复 OK 即可。`;
 const REPLY_PRE = `OK，已记下。运维值班分机 ${NEIGHBOR} 已一并记录。`;
 const MILESTONES = '/tmp/btw-on-demand-e2e-milestones.log';
-const SHOT_OK = '/tmp/btw-on-demand-e2e.png';
+const SHOT_OK = NATIVE_DRAFT ? '/tmp/btw-native-draft-roundtrip.png' : '/tmp/btw-on-demand-e2e.png';
 const SHOT_FAIL = '/tmp/btw-on-demand-e2e-fail.png';
 const FRAME_CHILD = 'untrusted excerpts from the source conversation';
 
@@ -435,6 +436,87 @@ try {
 	await waitFor(() => !__e2e.dismissChooser() && __e2e.composer(), undefined, 'host composer after workspace selection', 16000);
 	mile('ok: web app loaded, host composer ready');
 
+	if (NATIVE_DRAFT) await verifyNativeDraft();
+	else await verifyAttachedChat();
+} catch (error) {
+	failed = true;
+	mile(`FAIL: ${(error && error.stack) || error}`);
+	try {
+		await shot(SHOT_FAIL);
+		console.error(await evaluate(() => ({
+			panel: document.querySelector('.dsh-btw-modal')?.innerText,
+			buttons: [...document.querySelectorAll('button')].filter(__e2e.visible).map(b => [b.textContent.trim().slice(0, 50), b.getAttribute('aria-label'), b.disabled]).slice(0, 50),
+		})));
+	} catch { /* browser may be gone */ }
+	console.error(`FAIL: ${(error && error.stack) || error}`);
+	console.error(`--- dsh output tail (token redacted) ---\n${dshOutput.slice(-4000).replace(/([?&]token=)[^&\s]+/g, '$1<redacted>')}`);
+	console.error(`--- stub requests (${requests.length}) ---`);
+	for (const [i, r] of requests.entries()) {
+		console.error(`#${i} ${new Date(r.t).toISOString()} ${r.path} roles=${(r.body?.messages ?? []).map((m) => m.role).join('>')} chars=${(r.raw || '').length}${(r.raw || '').includes(FRAME_CHILD) ? ' CHILD' : ''}`);
+	}
+} finally {
+	try { ws.close(); } catch { /* ignore */ }
+	await teardown();
+	if (KEEP) console.log(`kept isolated root: ${root}`);
+	stub.close();
+	console.log('cleanup: chromium + dsh stopped' + (KEEP ? '' : ', temporary directory removed'));
+}
+if (failed || interrupted) process.exitCode = 1;
+
+async function verifyNativeDraft() {
+	const draft = 'BTW-DRAFT-SYNTHETIC-1';
+	const edited = draft + ' EDITED-IN-TEMP';
+	const toggle = active => {
+		const selector = active ? '[data-btw-native-utility], [data-btw-native-status]' : '.dsh-btw-global-entry[aria-pressed="false"]';
+		const button = [...document.querySelectorAll(selector)].find(__e2e.visible);
+		if (button) button.click();
+		return !!button;
+	};
+	const shows = ({ active, draft }) => {
+		if (!__e2e.composer() || !__e2e.composerEl.isContentEditable) return false;
+		const id = __e2e.composerEl.closest('[data-conversation-session]')?.getAttribute('data-conversation-session');
+		if (!id) return false;
+		// The header reports a temporary intent before nativeOpen commits.
+		// Require the session-specific decoration on the current composer.
+		const native = [...document.querySelectorAll('style[data-plugin="dsh-btw"]')].some(s =>
+			s.textContent.includes('[data-conversation-session=' + JSON.stringify(id) + ']'));
+		return native === active && (__e2e.composerEl.value ?? __e2e.composerEl.innerText).trim() === draft;
+	};
+	await evaluate(() => __e2e.composerEl.focus());
+	await send('Input.insertText', { text: draft }, page);
+	await waitFor(shows, { active: false, draft }, 'ordinary draft');
+	assert.ok(await evaluate(toggle, false));
+	await waitFor(shows, { active: true, draft }, 'draft carried into native temporary chat');
+	await evaluate(() => __e2e.composerEl.focus());
+	await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'End', code: 'End', windowsVirtualKeyCode: 35 }, page);
+	await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'End', code: 'End', windowsVirtualKeyCode: 35 }, page);
+	await send('Input.insertText', { text: ' EDITED-IN-TEMP' }, page);
+	await waitFor(shows, { active: true, draft: edited }, 'temporary edit');
+	assert.ok(await evaluate(toggle, true));
+	await waitFor(shows, { active: false, draft: edited }, 'edited draft carried back without sending');
+	mile('ok: ordinary → temporary → ordinary kept the edited draft');
+	await shot(SHOT_OK);
+	assert.equal(requests.length, 0, 'opening, editing and closing must not call the model');
+	assert.ok(await evaluate(toggle, false));
+	await waitFor(shows, { active: true, draft: edited }, 'draft enters a second temporary chat');
+	const composerSession = () => __e2e.composer() && __e2e.composerEl.closest('[data-conversation-session]')?.getAttribute('data-conversation-session');
+	const beforeId = await evaluate(composerSession);
+	assert.ok(await evaluate(() => __e2e.clickSendButton()));
+	await waitFor(() => [...document.querySelectorAll('[data-conversation-session]')].some(root => {
+		return __e2e.visible(root) && root.innerText.includes('OK，已记下。');
+	}), undefined, 'stub reply in native temporary chat', 9000).catch(async error => {
+		mile('native composer retained after send: ' + ((await evaluate(composerSession)) === beforeId));
+		throw error;
+	});
+	assert.equal(await evaluate(composerSession), beforeId, 'same native conversation renders the assistant reply');
+	assert.ok(requests.some(r => r.body?.messages?.some(m => m.role === 'user' && JSON.stringify(m.content).includes(edited))));
+	assert.ok(await evaluate(() => __e2e.composerEl.innerText.trim() === ''), 'sent draft was consumed');
+	assert.ok(await evaluate(toggle, true));
+	await waitFor(shows, { active: false, draft: '' }, 'sent draft does not reappear in ordinary chat');
+	mile('RESULT: PASS — draft roundtrip, one explicit send, no resend after exit');
+}
+
+async function verifyAttachedChat() {
 	// Session B (other source, private) first; a NEW session then becomes A and stays current,
 	// so no sidebar navigation back is needed.
 	await seedMessage(MSG_PRIVATE, 'session B private message');
@@ -678,27 +760,4 @@ try {
 		console.log('\nRESULT: PASS — 按需引用当前对话 browser E2E green');
 		console.log(`requests_total=${requests.length} child_turns=1 excerpts=${answer.count}`);
 	}
-} catch (error) {
-	failed = true;
-	mile(`FAIL: ${(error && error.stack) || error}`);
-	try {
-		await shot(SHOT_FAIL);
-		console.error(await evaluate(() => ({
-			panel: document.querySelector('.dsh-btw-modal')?.innerText,
-			buttons: [...document.querySelectorAll('button')].filter(__e2e.visible).map(b => [b.textContent.trim().slice(0, 50), b.getAttribute('aria-label'), b.disabled]).slice(0, 50),
-		})));
-	} catch { /* browser may be gone */ }
-	console.error(`FAIL: ${(error && error.stack) || error}`);
-	console.error(`--- dsh output tail (token redacted) ---\n${dshOutput.slice(-4000).replace(/([?&]token=)[^&\s]+/g, '$1<redacted>')}`);
-	console.error(`--- stub requests (${requests.length}) ---`);
-	for (const [i, r] of requests.entries()) {
-		console.error(`#${i} ${new Date(r.t).toISOString()} ${r.path} roles=${(r.body?.messages ?? []).map((m) => m.role).join('>')} chars=${(r.raw || '').length}${(r.raw || '').includes(FRAME_CHILD) ? ' CHILD' : ''}`);
-	}
-} finally {
-	try { ws.close(); } catch { /* ignore */ }
-	await teardown();
-	if (KEEP) console.log(`kept isolated root: ${root}`);
-	stub.close();
-	console.log('cleanup: chromium + dsh stopped' + (KEEP ? '' : ', temporary directory removed'));
 }
-if (failed || interrupted) process.exitCode = 1;
