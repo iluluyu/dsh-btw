@@ -1265,8 +1265,8 @@ test("ask transmits selected model and configured context without snapshot", asy
 	assert.deepEqual(JSON.parse(JSON.stringify(call[2])), { cwd: null, transcript: "", contextMode: "none", modelMode: "custom", model: { provider: "p", model: "m" }, parentSessionId: "s1" });
 });
 
-test("on-demand sends only the authorized recent snapshot", async () => {
-	const env = await setup({ askContextMode: "on-demand" }); await tick();
+test("recent sends only the authorized recent snapshot", async () => {
+	const env = await setup({ askContextMode: "recent" }); await tick();
 	env.render(env.registrations.get("btw-trigger")).props.onClick();
 	const component = env.registrations.get("btw-ask");
 	const props = chatProps("origin", Array.from({ length: 20 }, (_, i) => ({ kind: "user", content: [{ type: "text", text: `line ${i}` }] })));
@@ -1275,7 +1275,7 @@ test("on-demand sends only the authorized recent snapshot", async () => {
 	tree = env.render(component, props);
 	all(tree, (n) => n.props["aria-label"] === "提问")[0].props.onClick();
 	const payload = env.calls.find((entry) => entry[1] === "open")[2];
-	assert.equal(payload.contextMode, "on-demand");
+	assert.equal(payload.contextMode, "recent");
 	assert.ok(payload.transcript.includes("line 19"));
 	assert.ok(payload.transcript.includes("line 0"), "short loaded evidence remains authorized within the 48k budget, even beyond 14 messages");
 });
@@ -1460,7 +1460,7 @@ test("voice uses the DSH provider and only inserts into the BTW draft", async ()
 	env.cleanup();
 });
 
-test("temporary on-demand sends snapshot and controls follow context-model-send order", async () => {
+test("temporary on-demand opens with a source binding, and controls follow context-model-send order", async () => {
 
 
 	const env = await setup({}, { rpc: (method) => ({ ok: true, value: method === "models" ? { providers: [] } : method === "open" ? { sessionId: "temp", cwd: null } : method === "send" ? { output: "ok" } : { text: "", lastSeq: 0 } }) });
@@ -1480,8 +1480,14 @@ test("temporary on-demand sends snapshot and controls follow context-model-send 
 	all(tree, (n) => n.type === "textarea")[0].props.onChange({ target: { value: "hello" } });
 	tree = env.render(overlay); all(tree, (n) => n.props["aria-label"] === "发送")[0].props.onClick(); await tick(); await tick();
 	const payload = env.calls.find((c) => c[1] === "open")[2];
-	assert.equal(payload.contextMode, "on-demand"); assert.equal(payload.transcript, "User: bounded");
+	assert.equal(payload.contextMode, "on-demand"); assert.equal(payload.transcript, undefined);
+	assert.equal(payload.contextSource, "events");
 	assert.equal(payload.modelMode, "current");
+	assert.ok(!env.calls.some(([, method]) => method === "send"), "unavailable source cannot silently send");
+	const recovered = env.render(overlay);
+	assert.equal(all(recovered, n => n.type === "textarea")[0].props.value, "hello");
+	assert.ok(all(recovered, n => n.props.role === "status").some(n => String(n.children[0]).includes("未发送")));
+	env.cleanup();
 });
 
 test("standalone legacy view retains shared child transport and waits for close", async () => {
@@ -1545,21 +1551,79 @@ async function historyFixture(records, extra = {}) {
 		const start = Math.max(0, end - 4);
 		return { ok: true, value: { cursor, records: records.slice(start, end), hasMore: start > 0 } };
 	} }, { get: (target, key) => { if (!(key in target)) throw new Error("forbidden source write: " + String(key)); return target[key]; } }) };
-	const env = await setup({ askContextMode: "all", tempContextMode: "all" }, { remote, effects: true, connection: { state }, Date: class extends Date { static now() { return now; } }, ...extra });
+	const env = await setup({ askContextMode: extra.contextMode || "all" }, { remote, effects: true, connection: { state }, Date: class extends Date { static now() { return now; } }, ...extra });
 	const component = env.registrations.get("btw-ask"), props = chatProps("origin", [{ kind: "user", content: [{ type: "text", text: "projection must not be sent" }] }]);
-	const submit = () => {
+	const submit = (question = "question", reuse = false) => {
 		const existing = env.render(component, props);
-		if (existing && all(existing, isMessageContent).length) {
+		if (!reuse && existing && all(existing, isMessageContent).length) {
 			button(existing, "关闭侧问面板").props.onClick();
 		}
 		if (!env.render(component, props)) env.render(env.registrations.get("btw-trigger")).props.onClick();
 		let tree = env.render(component, props);
-		all(tree, (n) => n.type === "textarea")[0].props.onChange({ target: { value: "question" } });
+		const expand = button(tree, "展开输入框");
+		if (expand) { expand.props.onClick(); tree = env.render(component, props); }
+		all(tree, (n) => n.type === "textarea")[0].props.onChange({ target: { value: question } });
 		tree = env.render(component, props); all(tree, (n) => n.props["aria-label"] === "提问")[0]?.props.onClick();
 	};
 	return { ...env, pages, component, props, submit, error: () => all(env.render(component, props), (n) => n.props.role === "status" && n.props.className?.includes("dsh-btw-err"))[0]?.children[0], advance: (ms) => { now += ms; }, disconnect: () => { connected = "disconnected"; for (const fn of listeners) fn(); }, reconnect: () => { connected = "connected"; for (const fn of listeners) fn(); } };
 }
-const record = (seq, type = "user/message", text = "text " + seq) => ({ type: "event", event: { seq, type, data: type === "user/message" ? { content: [{ type: "text", text }] } : { message: { content: [{ type: "text", text }] } } } });
+const record = (seq, type = "user/message", text = "text " + seq) => ({ type: "event", event: { seq, type, data: type === "user/message" ? { source: { kind: "user" }, content: [{ type: "text", text }] } : { message: { content: [{ type: "text", text }] } } } });
+
+test("on-demand pages one source at a fixed cut, exposes only matching text, and rereads on follow-up", async () => {
+	const records = [record(0, "user/message", "SQLite: local indexing keeps setup simple."),
+		record(1, "tool/result", "SQLite PRIVATE_TOOL_RAW"),
+		record(2, "assistant/message", "SQLite: easier offline indexing."), record(3, "user/message", "unrelated unrelated"),
+		record(4, "user/message", "SQLite PRIVATE_INJECTED"), record(5, "assistant/message", "SQLite PRIVATE_INTERRUPTED"),
+		...Array.from({ length: 5 }, (_, i) => record(i + 6, "user/message", "x".repeat(14_000)))];
+	records[2].event.data.message.content.push({ type: "reasoning", text: "SQLite PRIVATE_REASONING" });
+	records[4].event.data.source.kind = "runtime-context";
+	records[5].event.data.interrupted = true;
+	const env = await historyFixture(records, { contextMode: "on-demand" }); await tick();
+	assert.equal(env.pages.length, 0);
+	env.submit("刚才为什么选 SQLite？"); await tick(); await tick();
+	const sent = () => env.calls.filter(([, method]) => method === "send").map(call => JSON.parse(JSON.stringify(call[2])));
+	assert.equal(sent().length, 1, env.error());
+	const { context } = sent()[0];
+	assert.deepEqual(context.excerpts.map(({ seq, role }) => [seq, role]), [[0, "user"], [2, "assistant"]]);
+	assert.doesNotMatch(JSON.stringify(context.excerpts), /PRIVATE|unrelated|projection/);
+	assert.doesNotMatch(JSON.stringify(context.neighbors), /PRIVATE|projection/);
+	assert.deepEqual(context.neighbors.find(item => item.anchor === 2)?.excerpts.map(item => item.seq), [3]);
+	assert.deepEqual(env.pages.map(p => p.throughSeq), [undefined, 10, 10]);
+	assert.equal(context.throughSeq, 10);
+	const tree = env.render(env.component, env.props);
+	assert.equal(all(tree, n => n.type === "summary" && n.children[0] === "引用了 2 段").length, 1);
+	records.push(record(11, "assistant/message", "Retry code ERR_RETRY works after reload."));
+	env.submit("what about ERR_RETRY?", true); await tick(); await tick();
+	assert.equal(sent().length, 2, env.error());
+	assert.equal(sent()[1].context.throughSeq, 11);
+	assert.deepEqual(sent()[1].context.excerpts.map(item => item.seq), [11]);
+	env.cleanup();
+});
+
+test("on-demand no match can send the question alone; read failure and close never send", async () => {
+	const env = await historyFixture([record(0, "assistant/message", "some unrelated material")], { contextMode: "on-demand" }); await tick();
+	env.submit("SQLITE"); await tick(); await tick();
+	const send = env.calls.find(([, method]) => method === "send")[2];
+	assert.equal(send.context.excerpts.length, 0);
+	assert.equal(all(env.render(env.component, env.props), n => n.children?.includes("未找到相关内容")).length, 1);
+	env.cleanup();
+
+	const changed = await historyFixture([], { contextMode: "on-demand", events: (_req, _signal, n) => ({ ok: true,
+		value: n === 1 ? { cursor: 1, records: [record(1)], hasMore: true } : { cursor: 2, records: [record(0)], hasMore: false } }) });
+	changed.submit("sqlite"); await tick(); await tick();
+	assert.match(changed.error(), /切点改变/);
+	assert.ok(!changed.calls.some(([, method]) => method === "send"));
+	changed.cleanup();
+
+	const pending = deferred(); let signal;
+	const closing = await historyFixture([], { contextMode: "on-demand", events: (_req, observed) => { signal = observed; return pending.promise; } });
+	closing.submit("sqlite"); await tick(); await tick();
+	assert.equal(signal.aborted, false);
+	button(closing.render(closing.component, closing.props), "关闭侧问面板").props.onClick();
+	assert.equal(signal.aborted, true);
+	pending.resolve({ ok: true, value: { cursor: 0, records: [record(0, "user/message", "sqlite")], hasMore: false } });
+	await tick(); assert.ok(!closing.calls.some(([, method]) => method === "send")); closing.cleanup();
+});
 
 test("all binds the guarded remote.session namespace and degrades safely when unavailable", async () => {
 	for (const available of ["present", "missing-root", "missing-session"]) {
@@ -2953,7 +3017,7 @@ test("recent snapshot retains completed message tails, tool-only text and a fina
 		[{ kind: "user", content: [text("x".repeat(60_000) + "needle-tail")] }],
 		Array.from({ length: 25 }, (_, i) => ({ kind: "user", content: [text(i === 0 ? "needle-older-short-message" : "short message " + i)] })),
 	]) {
-		const env = await setup({ askContextMode: "on-demand", tempContextMode: "on-demand" }, { rpc: method => ({ ok: true, value: method === "models" ? { providers: [] } : method === "open" ? { sessionId: "probe-child" } : method === "send" ? { output: "ok" } : method === "poll" ? { text: "", lastSeq: 0 } : {} }) });
+		const env = await setup({ askContextMode: "recent" }, { rpc: method => ({ ok: true, value: method === "models" ? { providers: [] } : method === "open" ? { sessionId: "probe-child" } : method === "send" ? { output: "ok" } : method === "poll" ? { text: "", lastSeq: 0 } : {} }) });
 		env.render(env.registrations.get("btw-trigger")).props.onClick();
 		const component = env.registrations.get("btw-ask"), props = { ...chatProps("origin", nodes), useSession: select => select({ removed: false, text: "LIFECYCLE_SECRET" }), useChat: select => select({ legacy: { nodes, partial: { text: "PARTIAL_SECRET" }, runningCalls: [{ text: "RUNNING_SECRET" }] } }) };
 		let tree = env.render(component, props); all(tree, n => n.type === "textarea")[0].props.onChange({ target: { value: "search" } });

@@ -71,22 +71,31 @@ test("committed reasoning is independent across turns and survives final output 
 	assert.equal(messages[2].reasoning, undefined);
 });
 
-test("live reasoning replaces retry snapshots and yields to committed reasoning on completion", async () => {
+test("retry previews stay visible and separate from live and committed reasoning", async () => {
 	const e = await start(); e.poll();
 	let poll = latest(e, "poll"); assert.equal(poll.payload.includeLiveReasoning, true);
 	poll.resolve({ text: "", lastSeq: 0, liveReasoning: { attemptId: "one", revision: 1, text: "first live", running: true } }); await tick();
 	assert.equal(e.controller.store.state.messages[1].liveReasoning, "first live");
 	e.poll(); poll = latest(e, "poll");
-	poll.resolve({ text: "", lastSeq: 0, liveReasoning: null }); await tick();
-	assert.equal(e.controller.store.state.messages[1].liveReasoning, "", "abandoned live text is removed");
+	poll.resolve({ text: "", lastSeq: 0, liveReasoning: null, retryReasoning: [{ attemptId: "one", text: "first live" }] }); await tick();
+	const gap = e.controller.store.state.messages[1];
+	assert.equal(gap.liveReasoning, "");
+	assert.equal(gap.reasoningPreview.text, "first live", "an empty live snapshot keeps the last displayable thought");
+	assert.deepEqual(JSON.parse(JSON.stringify(gap.reasoningAttempts)), [{ attemptId: "one", text: "first live" }], "an abandoned attempt stays visible instead of vanishing");
 	e.poll(); poll = latest(e, "poll");
-	poll.resolve({ text: "", lastSeq: 0, liveReasoning: { attemptId: "two", revision: 2, text: "replacement", running: true } }); await tick();
-	assert.equal(e.controller.store.state.messages[1].liveReasoning, "replacement", "attempt snapshots do not concatenate");
+	poll.resolve({ text: "", lastSeq: 0, liveReasoning: { attemptId: "two", revision: 2, text: "replacement", running: true },
+		retryReasoning: [{ attemptId: "one", text: "first live" }] }); await tick();
+	const retrying = e.controller.store.state.messages[1];
+	assert.equal(retrying.liveReasoning, "replacement", "attempt snapshots do not concatenate");
+	assert.equal(retrying.reasoningAttempts.length, 1, "redelivered previews dedupe by attempt");
 	latest(e, "send").resolve({ output: "final answer" }); await tick();
-	latest(e, "poll").resolve({ text: "", lastSeq: 0, reasoning: "committed thought", reasoningLastSeq: 1, liveReasoning: null }); await tick();
+	latest(e, "poll").resolve({ text: "", lastSeq: 0, reasoning: "committed thought", reasoningLastSeq: 1, liveReasoning: null,
+		retryReasoning: [{ attemptId: "one", text: "first live" }] }); await tick();
 	const message = e.controller.store.state.messages[1];
 	assert.equal(message.reasoning, "committed thought"); assert.equal(message.liveReasoning, "");
+	assert.deepEqual(JSON.parse(JSON.stringify(message.reasoningAttempts)), [{ attemptId: "one", text: "first live" }], "the prior attempt survives completion outside the committed fields");
 	assert.equal(message.streaming, false); assert.equal(message.text, "final answer");
+	assert.doesNotMatch(message.reasoning + message.text, /first live|replacement/);
 });
 
 test("old host and empty reasoning never create invented content", async () => {
@@ -139,9 +148,8 @@ test("factory sees only eligible reasoning and supplies safe missing-factory fal
 test("reasoning uses the public native disclosure and thinking icon when available", () => {
 	const { createMessageRenderer } = load("client.messages.js");
 	const h = (type, props, ...children) => ({ type, props: props || {}, children });
-	let expanded, calls = 0, runningRef;
-	const React = { useState: initial => { if (expanded === undefined) expanded = initial; return [expanded, update => { expanded = typeof update === "function" ? update(expanded) : update; }]; },
-		useRef: value => runningRef ||= { current: value }, useEffect: fn => fn() };
+	let expanded, calls = 0;
+	const React = { useState: initial => { if (expanded === undefined) expanded = initial; return [expanded, update => { expanded = update; }]; } };
 	function DisclosureRow() {} function ThinkIcon() {} function TextShimmer() {}
 	const render = createMessageRenderer({ h, React, DisclosureRow, ThinkIcon, TextShimmer });
 	const factory = (name, input) => { calls++; assert.equal(name, "conversation.chat.reasoning.content"); assert.equal(input.text, "**First thought**\nmore"); return "native-body"; };
@@ -151,14 +159,37 @@ test("reasoning uses the public native disclosure and thinking icon when availab
 	assert.equal(row.type, DisclosureRow); assert.equal(row.props.title, "思考"); assert.equal(row.props.icon.type, ThinkIcon);
 	assert.equal(row.props.open, true); assert.equal(row.props.running, true); assert.equal(calls, 1);
 	assert.equal(row.children[0].children[0], "native-body");
+	const paused = () => block.type({ ...block.props, running: false }).children[0];
+	assert.equal(paused().props.open, true, "a pause in thought does not fold the active turn");
 	row.props.onToggle(); row = block.type(block.props).children[0];
 	assert.equal(row.props.collapsedContent[0].props["data-shimmer-decoration"], true);
 	assert.equal(row.props.collapsedContent[1].children[0].type, TextShimmer);
+	assert.equal(paused().props.open, false, "manual collapse survives pauses");
+	assert.equal(block.type(block.props).children[0].props.open, false, "new deltas respect manual collapse");
 	row.props.onToggle();
-	block.type({ ...block.props, running: false }); row = block.type({ ...block.props, running: false }).children[0];
-	assert.equal(row.props.open, false, "completed thinking automatically collapses");
-	row.props.onToggle(); row = block.type({ ...block.props, running: false }).children[0];
-	assert.equal(row.props.open, true, "the reader can reopen completed thinking");
+	assert.equal(paused().props.open, true);
+	const finished = () => block.type({ ...block.props, running: false, autoOpen: false }).children[0];
+	assert.equal(finished().props.open, true, "manual expansion survives completion");
+	expanded = null;
+	assert.equal(finished().props.open, false, "untouched disclosures fold when the whole turn completes");
+});
+
+test("the display-only fallback keeps the current row through empty steps and avoids duplicate archived thoughts", () => {
+	const { createMessageRenderer } = load("client.messages.js");
+	const h = (type, props, ...children) => ({ type, props: props || {}, children });
+	const render = createMessageRenderer({ h });
+	const state = { role: "agent", text: "", streaming: true, liveReasoning: "", reasoningPreview: { attemptId: "old", text: "previous thought" } };
+	const row = message => render(message, "turn").children.find(node => node?.props?.key === "current-reasoning");
+	assert.equal(row(state).children[1].children[0], "previous thought");
+	const waiting = { ...state, liveReasoning: "<signature>masked", reasoningAttempts: [{ attemptId: "old", text: "previous thought" }] };
+	const tree = render(waiting, "turn");
+	assert.equal(tree.children[1], null, "the waiting preview is only rendered once");
+	assert.equal(row(waiting).children[1].children[0], "previous thought");
+	assert.equal(row(waiting).props.open, true);
+	const retry = { ...waiting, liveReasoning: "next thought", liveReasoningRunning: true };
+	assert.equal(row(retry).children[1].children[0], "next thought");
+	assert.equal(render(retry, "turn").children[1][0].children[1].children[0], "previous thought");
+	assert.equal(row({ ...state, streaming: false }), undefined, "a preview is never treated as committed");
 });
 
 test("reasoning hides signature metadata and incomplete signature prefixes", () => {
@@ -183,7 +214,8 @@ test("renderer isolates real reasoning in collapsed details with native markdown
 		const details = tree.children.find(n => n?.type === "details");
 		assert.ok(details); assert.equal(details.props.open, undefined); assert.equal(details.children[0].children[0], "思考过程");
 		assert.equal(markdown ? details.children[1].props.text : details.children[1].children[0], "thought");
-		assert.equal(tree.children.at(-1).children[0]?.props?.text ?? tree.children.at(-1).children[0], "answer");
+		const answer = tree.children.find(n => n?.props.className?.startsWith("dsh-btw-prose"));
+		assert.equal(answer.children[0]?.props?.text ?? answer.children[0], "answer");
 		for (const message of [{ role: "agent", text: "a" }, { role: "agent", text: "a", reasoning: "" }, { role: "user", text: "a", reasoning: "secret" }, { role: "agent", error: true, text: "a", reasoning: "secret" }]) {
 			assert.equal(render(message, "x").children.some(n => n?.type === "details"), false);
 		}

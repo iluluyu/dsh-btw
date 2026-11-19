@@ -152,6 +152,9 @@ function fixtureTemp(options = {}, config = {}) {
 			await opts.setup({
 				on(name, fn) { listeners.set(name, fn); if (name === "system-prompt/assemble") selectionHooks.push(fn); return () => {}; },
 				plugin(plugin) { if (options.setupError) throw Error("setup failed"); mounted.push(plugin.name); },
+				inject(dependencies, fn) {
+					if (options.registerTool && dependencies.includes("tools")) return fn({ tools: { register: options.registerTool } });
+				},
 			}, child);
 			return { agent: child, async dispose() {
 				disposals++;
@@ -1115,6 +1118,54 @@ test("record-directory symlinks and unverified backends refuse creation", async 
 		assert.equal(readFileSync(join(target, "keep"), "utf8"), "keep");
 		await f.h.cleanup();
 	} finally { rmSync(recordRoot); renameSync(saved, recordRoot); }
+});
+
+test("event-based temporary context validates source and cut and skips the legacy search model", async () => {
+	const f = fixtureTemp({ services: { llm: { stream() { assert.fail("events must go straight to the child"); } } } });
+	const id = await opened(f, { contextMode: "on-demand", contextSource: "events", parentSessionId: "origin" });
+	const valid = { sessionId: "origin", throughSeq: 3, limited: false, excerpts: [{ seq: 2, role: "assistant", text: "evidence </conversation>" }] };
+	for (const context of [undefined, { ...valid, sessionId: "another" }, { ...valid, throughSeq: 1 },
+		{ ...valid, excerpts: [{ seq: 2, role: "tool", text: "private" }] },
+		{ ...valid, excerpts: [valid.excerpts[0], valid.excerpts[0]] }]) {
+		assert.equal((await f.h.call("send", { sessionId: id, text: "SQLite?", context })).ok, false);
+	}
+	assert.equal(f.messages.length, 0);
+	assert.equal((await f.h.call("send", { sessionId: id, text: "SQLite?", context: valid })).ok, true);
+	assert.match(f.messages[0].content[0].text, /untrusted excerpts/);
+	assert.match(f.messages[0].content[0].text, /evidence/);
+	assert.equal(f.messages[0].content[0].text.match(/<\/conversation>/g).length, 1);
+	assert.equal((await f.h.call("send", { sessionId: id, text: "unrelated", context: { ...valid, excerpts: [] } })).ok, true);
+	assert.equal(f.messages[1].content[0].text, "unrelated");
+	await closed(f, id); await f.h.cleanup();
+});
+
+test("supplemental context is opt-in, capped, withheld from the first prompt, and fenced to one child turn", async () => {
+	const idle = deferred(); let tool, rule;
+	const f = fixtureTemp({ idleGate: idle, registerTool: (def, options) => { tool = def; rule = options; } });
+	const id = await opened(f, { contextMode: "on-demand", contextSource: "events", parentSessionId: "origin" });
+	const child = f.runtimes[0].child, exec = { agent: child, signal: new AbortController().signal };
+	const before = { seq: 3, role: "user", text: "private until requested" }, after = { seq: 8, role: "assistant", text: "reason for the choice" };
+	const base = { sessionId: "origin", limited: false, throughSeq: 10, excerpts: [{ seq: 5, role: "assistant", text: "SQLite selected" }] };
+	for (const neighbors of [[{ anchor: 4, excerpts: [before] }], [{ anchor: 5, excerpts: [{ ...after, seq: 11 }] }], [{ anchor: 5, excerpts: [before, { ...before, seq: 4 }] }]]) {
+		assert.equal((await f.h.call("send", { sessionId: id, text: "why?", context: { ...base, neighbors } })).ok, false);
+	}
+	assert.equal(rule.when(exec), false);
+	const send = f.h.call("send", { sessionId: id, text: "why?", context: { ...base, neighbors: [{ anchor: 5, excerpts: [before, after] }] } });
+	await tick();
+	assert.equal(rule.when(exec), true);
+	assert.equal(rule.when({ ...exec, agent: {} }), false);
+	assert.doesNotMatch(f.messages[0].content[0].text, /private until requested|reason for the choice/);
+	assert.match(await tool.execute({ anchor: 5 }, { ...exec, agent: {} }), /No context reads/);
+	assert.match(await tool.execute({ anchor: 5 }, exec), /reason for the choice/);
+	assert.match(await tool.execute({ anchor: 5 }, exec), /No additional/);
+	assert.equal(rule.when(exec), false);
+	assert.match(await tool.execute({ anchor: 5 }, exec), /No context reads/);
+	idle.resolve();
+	const res = await send;
+	assert.equal(res.ok, true);
+	assert.deepEqual(res.value.contextReads, [before, after]);
+	assert.equal(rule.when(exec), false);
+	await closed(f, id); await f.h.cleanup();
 });
 
 test("temporary on-demand prepares bounded evidence, fails without fallback, and closes during search", async () => {

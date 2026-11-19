@@ -1,5 +1,26 @@
 # 本地验证记录
 
+## BTW：流式思考平滑滚动
+
+- 移除每次消息更新都直接跳到末尾的逻辑。参考 DSH Chat 的底部跟随：用内容与视口尺寸更新触发原生平滑滚动，动画期间不重复发起；用户上滚时释放跟随，滚回末尾时恢复。减少动态效果开启时使用直接定位。
+- 327 项测试与 `--scroll`、`--retry`、`--supplement` 隔离 Chromium 端到端通过。`--scroll` 用真实鼠标滚轮确认上滚后的阅读位置稳定，并在回末尾后继续跟随。[上滚阅读截图](verification/on-demand/scroll-reading.png)。
+
+## BTW：思考区跨停顿保持连续
+
+- 流式活动的暂停只更新指示状态，不自动收起思考区。空的下一步快照使前一段真实思考继续可见，不进入正式推理字段；手动展开或收起保持有效。
+- `npm run check`、327 项测试及 `git diff --check` 通过。隔离 DSH rc.5 Chromium `--retry` 验证流内 503 后同一已展开节点在空档仍显示原文，完成后旧思考可展开。`--supplement` 复验通过。[重试空档截图](verification/on-demand/retry-gap.png)。
+
+## BTW：按需补读与思考重试
+
+- 复核并运行 `npm run check`、`npm test`（326 项）及 `git diff --check`。回归覆盖来源与切点、工具调用上限、遮蔽未授权邻接候选、排除注入上下文/中断输出、保留并分离重试思考。
+- 隔离 DSH rc.5 + Chromium + 环回 SSE 存根模型：`node scripts/smoke-on-demand-browser.mjs --supplement` 验证实际工具请求的相邻原文仅进入第二次模型请求，界面显示可展开的「补读」，其他会话内容不会传入。[补读参考截图](verification/on-demand/supplement.png)。
+- `node scripts/smoke-on-demand-browser.mjs --retry` 用流内 503 触发 DSH 重试。最终回答后，真实浏览器中仍可展开初次思考，内容与最终回答分开。[思考重试参考截图](verification/on-demand/retry.png)。两项均使用合成数据；持续验收要求见 [AGENTS.md](../AGENTS.md)。
+
+## BTW：按需引用当前对话
+
+- `npm run check` 和 319 项测试通过。覆盖早于原 48k 快照的命中、固定切点、后续消息重新读取、工具/推理过滤、无命中、取消、读取失败保留草稿及 RPC 片段校验。
+- `node scripts/smoke-on-demand-browser.mjs` 在隔离的 DSH `0.2.2-rc.5`、真实 Chromium 和本地 SSE 测试模型上通过。从「顺便问」选择模式并发送后，仅产生一次回答模型请求；只传匹配的原文，另一会话和无关内容均未进入请求；可展开「引用了 1 段」。截图 `/tmp/btw-on-demand-e2e.png`，日志 `/tmp/btw-on-demand-e2e-milestones.log`。测试仅用合成内容。
+
 ## BTW：入口与位置
 
 - 每个已开启的顺便问入口下方用 DSH `SegmentedControl` 靠右展示三种位置。回归覆盖独立保存与折叠回显、兼容旧共用设置、三入口各自打开位置、共享已有聊天与草稿，以及主页临时聊天的独立开关。`npm run check` 和 316 项测试通过，WSL Web 预览更新后 HTTP 200；此改动尚未装入 Windows 桌面版。
