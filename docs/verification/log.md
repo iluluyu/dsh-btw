@@ -148,7 +148,7 @@
 - 全量 271 项运行中，270 项通过；新 reopen 回归的唯一失败是测试夹具仍引用旧关闭 unit，修正夹具后重跑全部 host 63 项均通过，其余 208 项已在同一实现上通过。`npm run check`、`git diff --check` 通过。
 - 隔离安装版 Linux dsh 0.2.2-rc.1 连续 8 次未发送的原生会话：已有项目继承、公开 archive 退出、并发 close、实际插件 restart；无新 btw 分组，用户 workspace/哨兵不变，本人 JSONL/恢复记录/archive 标记移除，永久 deny marker 保留。脚本已通过并清掉所属进程与临时目录，无供应商请求。
 - `.github/workflows/check.yml` 新增 Windows/macOS 的 filesystem/client contracts，结果以对应验证分支 workflow run 为准，未成功前不声称通过；这些是实际 OS 的契约测试，也不等同桌面应用 GUI 真机验收。本轮没有 Windows/macOS 桌面真机，不把 Web smoke 作为桌面通过证据。未 bump、未发布、未改用户 profile。
-- 公开 SDK 能力与版本绑定私有读取边界见 [原生临时聊天架构复核](native-temp-architecture-review.md)。
+- 公开 SDK 能力与版本绑定私有读取边界见 [原生临时聊天架构复核](../archive/native-review.md)。
 
 ## 本轮：workspace 关闭、临时聊天退出与切换
 

@@ -54,3 +54,22 @@ child 流程的全局新建不带 cwd/父会话，强制无父上下文；原生
 1. **最初 MVP**：新对话右上入口 → 无工作区灰色聊天 → DSH 默认模型两轮 → 等待清理退出。自动化先行，真实宿主/浏览器由主代理单独复验。
 2. 来源会话、侧问、收起/停靠、草稿送回与跨来源保护，逐项验收已有实现。
 3. recent/all/on-demand、模型/设置、缓存与错误恢复；最后按设计批注做窄屏、深浅色及键盘验收。不以单阶段通过代表全部完成。
+
+
+## 原生对话页与输入框复用边界
+
+- `@deepseek-ai/dsh-client-ui-conversation` 的 `conversation.content` 是按 session scope 渲染的完整 conversation factory，不可将内部 `InputBar`、发送按钮或权限选择器通过私有深层路径单独拆出复用。
+- 无来源 btw 经 `/btw nativeOpen` 创建独占普通 root Session 并用公开 `uiWorkspace.openSession(id)` 打开完整 DSH 原生 conversation（原生 composer、`+`、权限/模型选择、思考与消息渲染均由宿主提供）；btw 只负责作用域虚线描边与「临时聊天」状态入口。
+- 创建前必须由 `session_projcache` 保护路由落持久拒写标记（pre-create tombstone），未启用或门未绑定时拒绝创建；共享附件 blob 不删、不做安全擦除。细节见 [cleanup.md](cleanup.md)。
+
+## 按需上下文与 DSH 复用
+
+- 「按需引用当前对话」仅在本轮发送且选中该模式时检索，使用公开 `remote.session.events` 读取来源会话固定切点的有界分页（最多 16 页、8192 事件、2 Mi UTF-16 单位、限时 10 秒），本地排序后每轮引用最多 4 段、每段至多 800 UTF-16 单位，并标记为参考数据；省掉独立模型搜索阶段，不要求所选模型支持工具调用。
+- 子会话专用只读工具 `btw_read_context` 仅可按本轮已引用事件序号补读紧邻上一条/下一条可见消息（每轮最多 2 次、每次最多 2 段），不能搜索其他会话或接收任意目标。
+- `sessionQuery.searchEvents` 属于可选实验组 `dsh-experimental-session-search`，当前不作为必选依赖；`dsh-session-reference` 适合未来手动 `@引用` 场景。
+
+## dsh subagent 适配边界
+
+- 临时聊天通过 `ctx.agents.create()` 创建由 btw 自己控制的独立子 agent（独占目录、恢复记录、每条聊天独立关闭清理屏障）；侧问仍为一次性 `llm.stream()`。
+- 有在线来源 agent 时，复用公开 `resolveChildDepth()`、`childSessionMeta()`、`captureDelegatedPolicyOverrides()` 与 `appendDelegatedPolicyOverrides()` 写入子会话谱系与权限覆盖，审批锁为 `never`，不向父会话写 `subagent/catalog` 或消息；不直接调用 `ctx.subagents.startActivation()`（其会向父会话追加事实且 `dispose()` 不保证删除会话文件）。
+- 存储与退出清理约束见 [storage.md](storage.md)。

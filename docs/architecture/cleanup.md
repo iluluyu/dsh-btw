@@ -2,12 +2,12 @@
 
 ## 最小建议与用户可感知语义
 
-**能打开真正的 DSH 普通对话页，且已按显式启动路由接入产品。** btw 持有普通 root Agent，客户端 `uiWorkspace.openSession(id)` 的正向路径此前已验证，见 [输入框边界](native-composer-boundary.md)。后续隔离研究已启动完整安装版 Web 并通过真实 Agent/HTTP + 本地合成 adapter 测试，见 C；产品接入现状见 C 首节的「产品接入（nativeOpen / nativeClose）」。在默认宿主（未启用路由）中，仍不能承诺“退出后直到宿主退出都不再出现任何会话数据”。
+**能打开真正的 DSH 普通对话页，且已按显式启动路由接入产品。** btw 持有普通 root Agent，客户端 `uiWorkspace.openSession(id)` 的正向路径此前已验证，见 [架构与原生复用边界](overview.md#原生对话页与输入框复用边界)。后续隔离研究已启动完整安装版 Web 并通过真实 Agent/HTTP + 本地合成 adapter 测试，见 C；产品接入现状见 C 首节的「产品接入（nativeOpen / nativeClose）」。在默认宿主（未启用路由）中，仍不能承诺“退出后直到宿主退出都不再出现任何会话数据”。
 
 当前约束下，启用路由后能支持的最小语义是 **“创建前拒写门（本人 UUID 的投影缓存在 JSON writer 之前被拒写，从不落盘）+ 本人 JSONL / 独占 workspace / 恢复记录清理 + 永久墓碑”**，不能作为完整阅后即焚上线；宿主内存、其他客户端、绕过 gate 的写入与共享附件 blob 不在保证内。默认宿主未启用路由时，`nativeOpen` 明确报错拒绝创建，无来源入口显示错误，不创建临时会话。以下墓碑/缓存清扫算法设计描述其推理与前提：
 
 1. 创建前持久登记独占 Session；结束时先持久化墓碑，再禁止 btw 自己继续发送。
-2. 释放本客户端 scope、停止本人任务、等待本人 Agent dispose 和已知持久化关闭，按[现有 rc.1 规则](temporary-chat-storage.md)删除独占 JSONL。
+2. 释放本客户端 scope、停止本人任务、等待本人 Agent dispose 和已知持久化关闭，按[现有 rc.1 规则](storage.md)删除独占 JSONL。
 3. 保留墓碑并报告缓存清理尚无受支持接口。**不得通过 diagnostic `DomainFacility.get()` 借用宿主 domain 后删除 projection row**：方法可调用不等于取得宿主拥有的写入权限。只有获得明确受支持的宿主清理 capability，或在启动前通过公开扩展合法拥有 backend 生命周期后，才讨论缓存精确清扫与恢复。**列表/JSONL 消失不表示缓存已永久删除**；缓存可能短暂重现，其他客户端/在途请求/JS 引用仍可能持有内容。
 4. 不允许把一次扫描为空、固定等待或当前 table.delete 成功标为“全部清理完成”。默认部署最多承诺“本人日志已删除，宿主缓存不保证删除”；不能在没有受支持清理能力时宣称“缓存持续清理中”。只有额外清理能力获支持且满足下文静默前提后，才讨论 eventual cleanup。
 

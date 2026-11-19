@@ -26,7 +26,7 @@ dsh plugin --profile web add dsh-btw      # Web
 dsh plugin --profile desktop add dsh-btw  # 桌面版
 ```
 
-安装后重启 `dsh web` 或桌面应用。Windows 桌面找不到入口或无法开启时，参见 [临时聊天排查](https://github.com/iluluyu/dsh-btw/blob/main/docs/windows-desktop-temporary-chat.md)。
+安装后重启 `dsh web` 或桌面应用。Windows 桌面找不到入口或无法开启时，参见 [临时聊天排查](https://github.com/iluluyu/dsh-btw/blob/main/docs/guides/windows.md)。
 
 **GitHub 最新提交**
 

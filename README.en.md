@@ -58,7 +58,7 @@ Configure under **Plugins → dsh-btw**. Default context and model are shared ac
 | `/btw` | On / Off, Above composer / Right sidebar / Floating window; default On, Above composer |
 | Top-right header entry | On / Off, Above composer / Right sidebar / Floating window; default On, Right sidebar |
 
-> Temporary chats are stored locally for a short time and logically deleted on close (not secure erasure); cleanup supports only the default JSONL storage of dsh `0.2.2-rc.1` / `0.2.2-rc.3` / `0.2.2-rc.5`. See [storage and cleanup boundaries](https://github.com/iluluyu/dsh-btw/blob/main/docs/temporary-chat-storage.md) (Chinese).
+> Temporary chats are stored locally for a short time and logically deleted on close (not secure erasure); cleanup supports only the default JSONL storage of dsh `0.2.2-rc.1` / `0.2.2-rc.3` / `0.2.2-rc.5`. See [storage and cleanup boundaries](https://github.com/iluluyu/dsh-btw/blob/main/docs/architecture/storage.md) (Chinese).
 
 ## License
 

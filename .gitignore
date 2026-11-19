@@ -1,3 +1,9 @@
 node_modules/
 ref/
 .pi/
+.DS_Store
+*.tmp
+.tmp-*
+.artifact-server.json
+.artifact-server.log
+.sharing.json
